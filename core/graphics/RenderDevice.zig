@@ -146,6 +146,7 @@ pub fn beginFrame(self: *RenderDevice) Error!void {
         try self.interface.waitFence(self.frame_fence, self.frame_fence_values[frame_index]);
         self.constant_allocators[frame_index].reset();
     }
+    self.interface.beginFrame();
 
     const cmd = self.commandList();
     self.interface.resetCommandAllocator(cmd);

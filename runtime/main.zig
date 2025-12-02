@@ -31,6 +31,15 @@ pub fn main() !void {
     );
     defer rctx.interface.destroySwapchain(swapchain);
 
+    var bell_img = try sp.assets.Image.loadFromMemory(bell_transparent_png, 4);
+    defer bell_img.deinit();
+
+    const bell_texture = try rctx.gres.loadTexture(
+        allocator,
+        .image(&bell_img, .rgba8unorm),
+        "bell_texture",
+    );
+
     while (!window.should_close) {
         sp.platform.processEvents();
         window.preUpdate();
@@ -38,10 +47,10 @@ pub fn main() !void {
 
         rctx.gres.clearTemporaryResources();
 
-        const white_texture = rctx.gres.getTextureView(rctx.gres.debug_texture) orelse {
+        const tex = rctx.gres.getTextureView(bell_texture) orelse {
             @panic("missing white texture");
         };
-        const sampler = rctx.gres.getSampler(.nearest);
+        const sampler = rctx.gres.getSampler(.linear);
 
         if (window.popResize()) |new_size| {
             _ = try rctx.interface.resizeSwapchain(swapchain, new_size.width, new_size.height);
@@ -50,7 +59,7 @@ pub fn main() !void {
         try rctx.ren.upload.doUploads();
 
         try rctx.ren.beginFrame();
-        try rctx.ren.blitSwapchain(swapchain, white_texture, sampler);
+        try rctx.ren.blitSwapchain(swapchain, tex, sampler);
         try rctx.ren.endFrame();
     }
 }
@@ -59,6 +68,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const sp = @import("sp");
+
+const bell_transparent_png = @embedFile("bell_transparent.png");
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 const is_debug_allocator = blk: {
