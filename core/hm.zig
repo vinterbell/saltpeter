@@ -66,13 +66,15 @@ pub fn HandleMap(comptime T: type) type {
             return self.items.items[handle.index];
         }
 
-        pub fn remove(self: *HandleMapT, handle: Handle) void {
+        pub fn remove(self: *HandleMapT, handle: Handle) ?T {
             if (!self.valid(handle)) {
-                return;
+                return null;
             }
             const item = self.items.items[handle.index];
+            const data = item.*;
             self.unused_items.append(self.allocator, handle.index) catch {};
             item.* = undefined;
+            return data;
         }
 
         pub fn valid(self: *const HandleMapT, handle: Handle) bool {

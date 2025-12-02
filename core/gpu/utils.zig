@@ -464,6 +464,24 @@ pub const UploadStage = struct {
             }
         }
     }
+
+    pub fn removeUploadsReferencingTexture(self: *UploadStage, texture: *gpu.Texture) void {
+        var i: isize = @intCast(self.pending_texture_uploads.items.len - 1);
+        while (i >= 0) : (i -|= 1) {
+            if (self.pending_texture_uploads.items[@intCast(i)].destination.texture == texture) {
+                _ = self.pending_texture_uploads.swapRemove(@intCast(i));
+            }
+        }
+    }
+
+    pub fn removeUploadsReferencingBuffer(self: *UploadStage, buffer: *gpu.Buffer) void {
+        var i: isize = @intCast(self.pending_buffer_uploads.items.len - 1);
+        while (i >= 0) : (i -|= 1) {
+            if (self.pending_buffer_uploads.items[@intCast(i)].destination.buffer == buffer) {
+                _ = self.pending_buffer_uploads.swapRemove(@intCast(i));
+            }
+        }
+    }
 };
 
 const std = @import("std");

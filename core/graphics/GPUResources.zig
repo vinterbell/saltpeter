@@ -256,6 +256,21 @@ pub fn loadTexture(
     desc: TextureDesc,
     debug_name: []const u8,
 ) !TextureHandle {
+    const entry: TextureEntry = try self.makeTexture(
+        allocator,
+        desc,
+        debug_name,
+    );
+    const handle = try self.textures.add(entry);
+    return .fromHm(handle);
+}
+
+fn makeTexture(
+    self: *GPUResources,
+    allocator: std.mem.Allocator,
+    desc: TextureDesc,
+    debug_name: []const u8,
+) !TextureEntry {
     const image: ?*const assets.Image = switch (desc.data) {
         .empty => null,
         .image => desc.data.image,
@@ -298,13 +313,11 @@ pub fn loadTexture(
         try self.us.uploadTexture(gpu_texture, img.data);
     }
 
-    const entry: TextureEntry = .{
+    return .{
         .handle = .nil,
         .gpu_texture = gpu_texture,
         .gpu_view = gpu_view,
     };
-    const handle = try self.textures.add(entry);
-    return .fromHm(handle);
 }
 
 pub fn getTexture(self: *GPUResources, handle: TextureHandle) ?*gpu.Texture {
@@ -319,6 +332,34 @@ pub fn getTextureView(self: *GPUResources, handle: TextureHandle) ?gpu.Descripto
     const hm_handle: hm.Handle = handle.toHm();
     const entry = self.textures.get(hm_handle) orelse return null;
     return self.us.interface.getDescriptorIndex(entry.gpu_view);
+}
+
+pub fn removeTexture(self: *GPUResources, handle: TextureHandle) void {
+    if (handle == .invalid) return;
+    const hm_handle: hm.Handle = handle.toHm();
+    const entry = self.textures.remove(hm_handle) orelse return;
+    self.us.interface.destroyDescriptor(entry.gpu_view);
+    self.us.interface.destroyTexture(entry.gpu_texture);
+}
+
+pub fn recreateTexture(
+    self: *GPUResources,
+    allocator: std.mem.Allocator,
+    handle: TextureHandle,
+    desc: TextureDesc,
+    debug_name: []const u8,
+) !void {
+    if (handle == .invalid) return;
+    const hm_handle: hm.Handle = handle.toHm();
+    const old_entry = self.textures.get(hm_handle) orelse return;
+    self.us.removeUploadsReferencingTexture(old_entry.gpu_texture);
+
+    self.us.interface.destroyDescriptor(old_entry.gpu_view);
+    self.us.interface.destroyTexture(old_entry.gpu_texture);
+
+    const new_entry = try self.makeTexture(allocator, desc, debug_name);
+    old_entry.* = new_entry;
+    old_entry.handle = hm_handle;
 }
 
 pub const PipelineEntry = struct {
@@ -360,8 +401,23 @@ pub fn loadRenderPipeline(
     desc: RenderPipelineDesc,
     debug_name: []const u8,
 ) !PipelineHandle {
-    var vs_blob: []const u8 = undefined;
-    var fs_blob: []const u8 = undefined;
+    const entry: PipelineEntry = try self.makeRenderPipeline(
+        allocator,
+        desc,
+        debug_name,
+    );
+    const handle = try self.pipelines.add(entry);
+    return .fromHm(handle);
+}
+
+fn makeRenderPipeline(
+    self: *GPUResources,
+    allocator: std.mem.Allocator,
+    desc: RenderPipelineDesc,
+    debug_name: []const u8,
+) !PipelineEntry {
+    var vs_blob: []const u8 = &.{};
+    var fs_blob: []const u8 = &.{};
 
     switch (desc.data) {
         .source => |source| {
@@ -402,12 +458,10 @@ pub fn loadRenderPipeline(
     );
     errdefer self.us.interface.destroyPipeline(gpu_pipeline);
 
-    const entry: PipelineEntry = .{
+    return .{
         .handle = .nil,
         .gpu_pipeline = gpu_pipeline,
     };
-    const handle = try self.pipelines.add(entry);
-    return .fromHm(handle);
 }
 
 pub fn getPipeline(self: *GPUResources, handle: PipelineHandle) ?*gpu.Pipeline {
@@ -415,6 +469,32 @@ pub fn getPipeline(self: *GPUResources, handle: PipelineHandle) ?*gpu.Pipeline {
     const hm_handle: hm.Handle = handle.toHm();
     const entry = self.pipelines.get(hm_handle) orelse return null;
     return entry.gpu_pipeline;
+}
+
+pub fn removePipeline(self: *GPUResources, handle: PipelineHandle) void {
+    if (handle == .invalid) return;
+    const hm_handle: hm.Handle = handle.toHm();
+    const entry = self.pipelines.remove(hm_handle) orelse return;
+    self.us.interface.destroyPipeline(entry.gpu_pipeline);
+}
+
+pub fn recreatePipeline(
+    self: *GPUResources,
+    allocator: std.mem.Allocator,
+    handle: PipelineHandle,
+    desc: RenderPipelineDesc,
+    debug_name: []const u8,
+) !void {
+    if (handle == .invalid) return;
+    const hm_handle: hm.Handle = handle.toHm();
+    const old_entry = self.pipelines.get(hm_handle) orelse return;
+
+    self.us.interface.destroyPipeline(old_entry.gpu_pipeline);
+
+    const new_entry = try self.makeRenderPipeline(allocator, desc, debug_name);
+
+    old_entry.* = new_entry;
+    old_entry.handle = hm_handle;
 }
 
 pub fn clearTemporaryResources(self: *GPUResources) void {

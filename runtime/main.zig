@@ -34,16 +34,36 @@ pub fn main() !void {
     var bell_img = try sp.assets.Image.loadFromMemory(bell_transparent_png, 4);
     defer bell_img.deinit();
 
+    var random_img = try sp.assets.Image.loadFromMemory(random_image_png, 4);
+    defer random_img.deinit();
+
     const bell_texture = try rctx.gres.loadTexture(
         allocator,
         .image(&bell_img, .rgba8unorm),
         "bell_texture",
     );
 
+    // try rctx.gres.recreateTexture(
+    //     allocator,
+    //     bell_texture,
+    //     .image(&random_img, .rgba8unorm),
+    //     "random_texture_recreated",
+    // );
+
+    var frame_index: usize = 0;
     while (!window.should_close) {
         sp.platform.processEvents();
         window.preUpdate();
         try window.postUpdate();
+
+        // if (frame_index == 5000) {
+        //     try rctx.gres.recreateTexture(
+        //         allocator,
+        //         bell_texture,
+        //         .image(&random_img, .rgba8unorm),
+        //         "random_texture_recreated",
+        //     );
+        // }
 
         rctx.gres.clearTemporaryResources();
 
@@ -56,11 +76,13 @@ pub fn main() !void {
             _ = try rctx.interface.resizeSwapchain(swapchain, new_size.width, new_size.height);
         }
 
-        try rctx.ren.upload.doUploads();
-
         try rctx.ren.beginFrame();
+        // make sure to do any uploads here
+        try rctx.ren.upload.doUploads();
         try rctx.ren.blitSwapchain(swapchain, tex, sampler);
         try rctx.ren.endFrame();
+
+        frame_index += 1;
     }
 }
 
@@ -70,6 +92,7 @@ const builtin = @import("builtin");
 const sp = @import("sp");
 
 const bell_transparent_png = @embedFile("bell_transparent.png");
+const random_image_png = @embedFile("random_image.png");
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 const is_debug_allocator = blk: {
