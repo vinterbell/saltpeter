@@ -151,8 +151,8 @@ pub fn main() !void {
 
     var camera: sp.graphics.Camera = .initPerspective(70.0, 800, 600, 0.1, 1000.0);
 
-    const camera_pitch_speed: f32 = 0.002;
-    const camera_yaw_speed: f32 = 0.002;
+    const camera_pitch_speed: f32 = 1.0;
+    const camera_yaw_speed: f32 = 1.0;
     const camera_move_speed: f32 = 0.05;
 
     var previous_time: std.Io.Clock.Timestamp = try .now(io, .real);
@@ -167,7 +167,7 @@ pub fn main() !void {
         const delta = previous_time.durationTo(now);
         previous_time = now;
 
-        const delta_time: f32 = @floatFromInt(delta.raw.toSeconds());
+        const delta_time: f32 = @as(f32, @floatFromInt(delta.raw.toNanoseconds())) / 1_000_000_000.0;
 
         const input_up = window.back_input.keys_held.contains(.up);
         const input_down = window.back_input.keys_held.contains(.down);
@@ -200,6 +200,13 @@ pub fn main() !void {
             rotated_view,
         );
         camera.setView(translated_view);
+
+        const t = linalg.util.getTranslationVec(translated_view);
+        std.debug.print("Camera position: ({}, {}, {})\n", .{ t[0], t[1], t[2] });
+
+        const r = linalg.util.getRotationQuat(translated_view);
+        const euler = linalg.quatToRollPitchYaw(r);
+        std.debug.print("Camera rotation (radians): ({}, {}, {})\n", .{ euler[0], euler[1], euler[2] });
 
         rctx.gres.clearTemporaryResources();
 
@@ -259,6 +266,14 @@ pub fn main() !void {
             }
             try rctx.interface.commandEndRenderPass(cmd);
         }
+
+        rctx.interface.commandTextureBarrier(
+            cmd,
+            view.targets.albedo_metallic.texture,
+            0,
+            .{ .present = true },
+            .{ .render_target = true },
+        );
 
         try rctx.us.doUploads();
         rctx.us.reset();

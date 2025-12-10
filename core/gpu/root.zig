@@ -474,10 +474,10 @@ pub const Pipeline = opaque {
 
         pub const default: RasterizationState = .{
             .fill_mode = .solid,
-            .cull_mode = .back,
+            .cull_mode = .none,
             .front_face = .clockwise,
             .depth_bias = null,
-            .enable_depth_clipping = true,
+            .enable_depth_clipping = false,
         };
     };
 
@@ -974,143 +974,46 @@ pub const Queue = enum(u32) {
 };
 
 pub const Access = packed struct(u32) {
-    /// can be presented to a window
-    present: bool = false,
-    /// can be used as a render target / color attachment
-    render_target: bool = false,
-    /// can be used as a depth/stencil attachment
-    depth_stencil: bool = false,
-    /// is a read only depth/stencil attachment
-    depth_stencil_read_only: bool = false,
-    /// can be used as a shader resource in the vertex shader
-    vertex_shader_read: bool = false,
-    /// can be used as a shader resource in the fragment/pixel shader
-    fragment_shader_read: bool = false,
-    /// can be used as a shader resource in the compute shader
-    compute_shader_read: bool = false,
-    /// can be written to by the vertex shader
-    vertex_shader_write: bool = false,
-    /// can be written to by the fragment/pixel shader
-    fragment_shader_write: bool = false,
-    /// can be written to by the compute shader
-    compute_shader_write: bool = false,
-    /// can be cleared by a command list
-    clear_write: bool = false,
-    /// can be used as a copy source
-    copy_src: bool = false,
-    /// can be used as a copy destination
-    copy_dst: bool = false,
-    /// can be used as an index buffer
+    common: bool = false,
+    vertex_and_constant_buffer: bool = false,
     index_buffer: bool = false,
-    /// can be used as indirect arguments for draw/dispatch calls
+    render_target: bool = false,
+    shader_write: bool = false,
+    depth_stencil_write: bool = false,
+    depth_stencil_read: bool = false,
+    non_pixel_shader_resource: bool = false,
+    pixel_shader_resource: bool = false,
     indirect_argument: bool = false,
-    // acceleration structure read and write access would go here
-    /// discard this resource for the next use
-    discard: bool = false,
-
-    _: u16 = 0,
-
-    pub const none: Access = .{};
-
-    pub fn with(a: Access, b: Access) Access {
-        return .{
-            .present = a.present or b.present,
-            .render_target = a.render_target or b.render_target,
-            .depth_stencil = a.depth_stencil or b.depth_stencil,
-            .depth_stencil_read_only = a.depth_stencil_read_only or b.depth_stencil_read_only,
-            .vertex_shader_read = a.vertex_shader_read or b.vertex_shader_read,
-            .fragment_shader_read = a.fragment_shader_read or b.fragment_shader_read,
-            .compute_shader_read = a.compute_shader_read or b.compute_shader_read,
-            .vertex_shader_write = a.vertex_shader_write or b.vertex_shader_write,
-            .fragment_shader_write = a.fragment_shader_write or b.fragment_shader_write,
-            .compute_shader_write = a.compute_shader_write or b.compute_shader_write,
-            .clear_write = a.clear_write or b.clear_write,
-            .copy_src = a.copy_src or b.copy_src,
-            .copy_dst = a.copy_dst or b.copy_dst,
-            .index_buffer = a.index_buffer or b.index_buffer,
-            .indirect_argument = a.indirect_argument or b.indirect_argument,
-            .discard = a.discard or b.discard,
-        };
-    }
-
-    pub fn without(a: Access, b: Access) Access {
-        return .{
-            .present = a.present and !b.present,
-            .render_target = a.render_target and !b.render_target,
-            .depth_stencil = a.depth_stencil and !b.depth_stencil,
-            .depth_stencil_read_only = a.depth_stencil_read_only and !b.depth_stencil_read_only,
-            .vertex_shader_read = a.vertex_shader_read and !b.vertex_shader_read,
-            .fragment_shader_read = a.fragment_shader_read and !b.fragment_shader_read,
-            .compute_shader_read = a.compute_shader_read and !b.compute_shader_read,
-            .vertex_shader_write = a.vertex_shader_write and !b.vertex_shader_write,
-            .fragment_shader_write = a.fragment_shader_write and !b.fragment_shader_write,
-            .compute_shader_write = a.compute_shader_write and !b.compute_shader_write,
-            .clear_write = a.clear_write and !b.clear_write,
-            .copy_src = a.copy_src and !b.copy_src,
-            .copy_dst = a.copy_dst and !b.copy_dst,
-            .index_buffer = a.index_buffer and !b.index_buffer,
-            .indirect_argument = a.indirect_argument and !b.indirect_argument,
-            .discard = a.discard and !b.discard,
-        };
-    }
-
-    pub const vertex: Access = .{
-        .vertex_shader_read = true,
-        .vertex_shader_write = true,
-    };
-    pub fn isVertex(self: Access) bool {
-        return self.vertex_shader_read or self.vertex_shader_write;
-    }
-
-    pub const fragment: Access = .{
-        .fragment_shader_read = true,
-        .fragment_shader_write = true,
-    };
-    pub fn isFragment(self: Access) bool {
-        return self.fragment_shader_read or self.fragment_shader_write;
-    }
-
-    pub const compute: Access = .{
-        .compute_shader_read = true,
-        .compute_shader_write = true,
-    };
-    pub fn isCompute(self: Access) bool {
-        return self.compute_shader_read or self.compute_shader_write;
-    }
+    copy_dest: bool = false,
+    copy_source: bool = false,
+    present: bool = false,
+    _: u19 = 0,
 
     pub const read: Access = .{
-        .vertex_shader_read = true,
-        .fragment_shader_read = true,
-        .compute_shader_read = true,
+        .vertex_and_constant_buffer = true,
+        .index_buffer = true,
+        .non_pixel_shader_resource = true,
+        .pixel_shader_resource = true,
+        .indirect_argument = true,
+        .copy_source = true,
     };
+
     pub fn isRead(self: Access) bool {
-        return self.vertex_shader_read or self.fragment_shader_read or self.compute_shader_read;
+        return self.vertex_and_constant_buffer or
+            self.index_buffer or
+            self.non_pixel_shader_resource or
+            self.pixel_shader_resource or
+            self.indirect_argument or
+            self.copy_source;
     }
 
-    pub const write: Access = .{
-        .vertex_shader_write = true,
-        .fragment_shader_write = true,
-        .compute_shader_write = true,
-        .clear_write = true,
+    pub const all_shader_resource: Access = .{
+        .non_pixel_shader_resource = true,
+        .pixel_shader_resource = true,
     };
-    pub fn isWrite(self: Access) bool {
-        return self.vertex_shader_write or self.fragment_shader_write or self.compute_shader_write or self.clear_write;
-    }
 
-    pub const dsv: Access = .{
-        .depth_stencil = true,
-        .depth_stencil_read_only = true,
-    };
-    pub fn isDSV(self: Access) bool {
-        return self.depth_stencil or self.depth_stencil_read_only;
-    }
-
-    pub const copy: Access = .{
-        .copy_src = true,
-        .copy_dst = true,
-    };
-    pub fn isCopy(self: Access) bool {
-        return self.copy_src or self.copy_dst;
+    pub fn isShaderResource(self: Access) bool {
+        return self.non_pixel_shader_resource or self.pixel_shader_resource;
     }
 };
 

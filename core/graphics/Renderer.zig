@@ -71,7 +71,7 @@ fn drawSky(self: *SceneRenderer, cmd: *gpu.CommandList) !void {
     const interface = self.rd.interface;
 
     try interface.commandBeginRenderPass(cmd, .colorOnly(&.{
-        .color(.first(self.view.targets.albedo_metallic.texture), .loadClear(.{ 0, 0, 0, 1.0 }), .store),
+        .color(.first(self.view.targets.albedo_metallic.texture), .discard, .store),
     }));
     {
         interface.commandBindPipeline(cmd, self.sky_pipeline);

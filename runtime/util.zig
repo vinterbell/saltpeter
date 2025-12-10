@@ -36,6 +36,7 @@ pub fn loadGltfIntoScene(
     document: *const sp.assets.Gltf,
     images: *const std.StringArrayHashMapUnmanaged(*const sp.assets.Image),
 ) !void {
+    _ = &images;
     for (document.data.images) |img| {
         if (img.data) |data| {
             var img_asset = try sp.assets.Image.loadFromMemory(data, 4);
@@ -48,15 +49,15 @@ pub fn loadGltfIntoScene(
             );
             try scene.images.append(scene.arena.allocator(), tex_handle);
         }
-        if (img.uri) |uri| {
-            const img_asset = images.get(uri) orelse return error.ImageNotFound;
-            const tex_handle = try gres.loadTexture(
-                allocator,
-                .image(img_asset, .rgba8unorm),
-                img.name orelse uri,
-            );
-            try scene.images.append(scene.arena.allocator(), tex_handle);
-        }
+        // if (img.uri) |uri| {
+        //     const img_asset = images.get(uri) orelse return error.ImageNotFound;
+        //     const tex_handle = try gres.loadTexture(
+        //         allocator,
+        //         .image(img_asset, .rgba8unorm),
+        //         img.name orelse uri,
+        //     );
+        //     try scene.images.append(scene.arena.allocator(), tex_handle);
+        // }
     }
 
     // todo: mapping from gltf texture index to the gpu texture handle

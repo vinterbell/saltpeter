@@ -137,8 +137,8 @@ fn update(self: *Camera) void {
     }
     if (self.projection_dirty) {
         self.view_projection_matrix = linalg.matToArr(linalg.mul(
-            linalg.matFromArr(self.projection_matrix),
             linalg.matFromArr(self.view_matrix),
+            linalg.matFromArr(self.projection_matrix),
         ));
     }
 }
