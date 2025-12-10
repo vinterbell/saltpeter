@@ -6,8 +6,6 @@ interface: gpu.Interface,
 swapchains: [max_blit_swapchains]*gpu.Swapchain,
 swapchain_count: usize,
 
-upload: gpu.utils.UploadStage,
-
 // frame stuff
 frame_fence: *gpu.Fence,
 current_frame_fence_value: u64,
@@ -22,15 +20,9 @@ compute_command_lists: [gpu.backbuffer_count]*gpu.CommandList,
 // per frame constants
 constant_allocators: [gpu.backbuffer_count]gpu.utils.LinearAllocatedBuffer,
 
-// to be set by user
-blit_pipeline: ?*gpu.Pipeline,
-
 pub fn init(allocator: std.mem.Allocator, options: gpu.Options) Error!RenderDevice {
     const interface = try gpu.init(allocator, options);
     errdefer interface.deinit();
-
-    var upload_stage: gpu.utils.UploadStage = try .init(allocator, interface);
-    errdefer upload_stage.deinit();
 
     var buf: [256]u8 = undefined;
     const frame_fence = try interface.createFence(
@@ -91,7 +83,6 @@ pub fn init(allocator: std.mem.Allocator, options: gpu.Options) Error!RenderDevi
         .interface = interface,
         .swapchains = @splat(undefined),
         .swapchain_count = 0,
-        .upload = upload_stage,
         // frame
         .frame_fence = frame_fence,
         .current_frame_fence_value = 0,
@@ -103,8 +94,6 @@ pub fn init(allocator: std.mem.Allocator, options: gpu.Options) Error!RenderDevi
         .compute_command_lists = compute_command_lists,
         // per frame constants
         .constant_allocators = constant_allocators,
-        // to be set by user
-        .blit_pipeline = null,
     };
 }
 
@@ -125,8 +114,6 @@ pub fn deinit(self: *RenderDevice) void {
         self.interface.destroyCommandList(cmd);
     }
     self.interface.destroyFence(self.frame_fence);
-
-    self.upload.deinit();
     self.interface.deinit();
 }
 
@@ -177,8 +164,6 @@ pub fn endFrame(self: *RenderDevice) Error!void {
     try self.interface.commandSignalFence(cmd, self.frame_fence, self.current_frame_fence_value);
     try self.interface.submitCommandList(cmd);
 
-    self.upload.reset();
-
     self.interface.endFrame();
 }
 
@@ -186,33 +171,27 @@ pub fn waitGpuIdle(self: *RenderDevice) Error!void {
     try self.interface.waitFence(self.frame_fence, self.current_frame_fence_value);
 }
 
-const Constant = struct {
-    shader_resource_view: gpu.Descriptor.Index,
-    offset: u32,
-};
-
-pub fn allocateConstantBuffer(self: *RenderDevice, comptime T: type, data: T) error{OutOfMemory}!Constant {
+pub fn allocateConstantBuffer(self: *RenderDevice, comptime T: type, data: T) error{OutOfMemory}!gpu_structures.BufferPtr(T) {
     const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
     const allocator = &self.constant_allocators[frame_index];
     const address = try allocator.alloc(@sizeOf(T));
     @memcpy(address.cpu, std.mem.asBytes(&data));
     return .{
-        .shader_resource_view = self.interface.getDescriptorIndex(allocator.shader_resource_view),
+        .buffer = self.interface.getDescriptorIndex(allocator.shader_resource_view),
         .offset = @intCast(address.offset),
     };
 }
 
-pub fn blitSwapchain(
+/// returns a backbuffer which is in the present state; make sure it's in present by the end of frame
+pub fn useSwapchain(
     self: *RenderDevice,
     swapchain: *gpu.Swapchain,
-    texture: gpu.Descriptor.Index,
-    sampler: gpu.Descriptor.Index,
-) Error!void {
+) Error!gpu.Swapchain.Backbuffer {
     // check if it's been blitted this frame already
     for (self.swapchains[0..self.swapchain_count]) |sc| {
         // should not blit same swapchain multiple times
         if (sc == swapchain) {
-            return;
+            return try self.interface.getSwapchainBackbuffer(swapchain);
         }
     }
     self.swapchains[self.swapchain_count] = swapchain;
@@ -220,47 +199,7 @@ pub fn blitSwapchain(
 
     try self.interface.acquireNextSwapchainImage(swapchain);
     const backbuffer = try self.interface.getSwapchainBackbuffer(swapchain);
-
-    const cmd = self.commandList();
-    self.interface.commandTextureBarrier(
-        cmd,
-        backbuffer.texture,
-        0,
-        .{ .present = true },
-        .{ .render_target = true },
-    );
-
-    try self.interface.commandBeginRenderPass(cmd, .colorOnly(&.{
-        .color(.first(backbuffer.texture), .loadClear(.{ 0, 0, 0, 1.0 }), .store),
-    }));
-    {
-        if (self.blit_pipeline) |pipeline| {
-            self.interface.commandBindPipeline(cmd, pipeline);
-            try self.interface.commandSetGraphicsConstants(
-                cmd,
-                .buffer1,
-                gpu_structures.BlitConstants,
-                .{
-                    .texture_index = texture,
-                    .sampler_index = sampler,
-                    .rect = .{
-                        -1.0, 1.0,
-                        1.0,  -1.0,
-                    },
-                },
-            );
-            self.interface.commandDraw(cmd, 6, 1, 0, 0);
-        }
-    }
-    try self.interface.commandEndRenderPass(cmd);
-
-    self.interface.commandTextureBarrier(
-        cmd,
-        backbuffer.texture,
-        0,
-        .{ .render_target = true },
-        .{ .present = true },
-    );
+    return backbuffer;
 }
 
 const Error = gpu.Error;

@@ -3,6 +3,7 @@ const Context = @This();
 allocator: std.mem.Allocator,
 sc: graphics.ShaderCompiler,
 ren: graphics.RenderDevice,
+us: gpu.utils.UploadStage,
 interface: gpu.Interface,
 gres: graphics.GPUResources,
 
@@ -18,10 +19,11 @@ pub fn create(allocator: std.mem.Allocator, shader_cwd: std.Io.Dir, io: std.Io, 
     errdefer rctx.ren.deinit();
     rctx.interface = rctx.ren.interface;
 
-    rctx.gres = try graphics.GPUResources.init(allocator, &rctx.ren.upload, &rctx.sc);
-    errdefer rctx.gres.deinit();
+    rctx.us = try gpu.utils.UploadStage.init(allocator, rctx.interface);
+    errdefer rctx.us.deinit();
 
-    rctx.ren.blit_pipeline = rctx.gres.getPipeline(rctx.gres.blit_pipeline);
+    rctx.gres = try graphics.GPUResources.init(allocator, &rctx.us, &rctx.sc);
+    errdefer rctx.gres.deinit();
 
     return rctx;
 }
@@ -29,6 +31,7 @@ pub fn create(allocator: std.mem.Allocator, shader_cwd: std.Io.Dir, io: std.Io, 
 pub fn destroy(self: *Context) void {
     self.ren.waitGpuIdle() catch {};
     self.gres.deinit();
+    self.us.deinit();
     self.ren.deinit();
     self.sc.deinit();
     self.allocator.destroy(self);

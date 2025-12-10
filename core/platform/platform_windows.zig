@@ -294,4 +294,4 @@ fn extractScancode(lParam: win32.LPARAM) u8 {
 const std = @import("std");
 const platform = @import("root.zig");
 
-const win32 = @import("../windows/root.zig").win32;
+const win32 = @import("../vendor/windows/root.zig").win32;

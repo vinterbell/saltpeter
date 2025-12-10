@@ -9,10 +9,22 @@ textures: hm.HandleMap(TextureEntry),
 pipelines: hm.HandleMap(PipelineEntry),
 samplers: [@typeInfo(Sampler).@"enum".fields.len]*gpu.Descriptor,
 
+mesh_set_allocator: std.mem.Allocator,
+mesh_sets: std.ArrayList(MeshSet),
+meshes: hm.HandleMap(Mesh),
+
 white_texture: TextureHandle,
 black_texture: TextureHandle,
 debug_texture: TextureHandle,
-blit_pipeline: PipelineHandle,
+
+blit_2d_pipeline: PipelineHandle,
+blit_2d_array_pipeline: PipelineHandle,
+blit_3d_pipeline: PipelineHandle,
+blit_cube_pipeline: PipelineHandle,
+blit_cube_array_pipeline: PipelineHandle,
+
+pub const max_vertex_buffer_size_per_mesh = 1_000_000;
+pub const max_index_buffer_size_per_mesh = 3_000_000;
 
 pub const TextureHandle = enum(u64) {
     invalid = 0,
@@ -26,6 +38,7 @@ pub const TextureHandle = enum(u64) {
         return @enumFromInt(@as(u64, @bitCast(handle)));
     }
 };
+
 pub const PipelineHandle = enum(u64) {
     invalid = 0,
     _,
@@ -38,11 +51,30 @@ pub const PipelineHandle = enum(u64) {
         return @enumFromInt(@as(u64, @bitCast(handle)));
     }
 };
+
+pub const MeshHandle = enum(u64) {
+    invalid = 0,
+    _,
+
+    fn toHm(self: MeshHandle) hm.Handle {
+        return @bitCast(@intFromEnum(self));
+    }
+
+    fn fromHm(handle: hm.Handle) MeshHandle {
+        return @enumFromInt(@as(u64, @bitCast(handle)));
+    }
+};
+
 pub const Sampler = enum(u32) {
     linear,
     nearest,
     anisotropic,
 };
+
+pub const init_mesh_vertices_size = 1_000_000;
+pub const init_mesh_indices_size = 300_000 * 4;
+pub const default_mesh_vertices_growth_factor = 1.5;
+pub const default_mesh_indices_growth_factor = 1.5;
 
 pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler) !GPUResources {
     var self: GPUResources = self: {
@@ -92,6 +124,9 @@ pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler)
         );
         errdefer us.interface.destroyDescriptor(anisotropic_sampler);
 
+        var meshes: hm.HandleMap(Mesh) = try .init(allocator);
+        errdefer meshes.deinit();
+
         break :self .{
             .arena = .init(allocator),
             .us = us,
@@ -104,10 +139,17 @@ pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler)
                 nearest_sampler,
                 anisotropic_sampler,
             },
+            .mesh_set_allocator = allocator,
+            .mesh_sets = .empty,
+            .meshes = meshes,
             .white_texture = .invalid,
             .black_texture = .invalid,
             .debug_texture = .invalid,
-            .blit_pipeline = .invalid,
+            .blit_2d_pipeline = .invalid,
+            .blit_2d_array_pipeline = .invalid,
+            .blit_3d_pipeline = .invalid,
+            .blit_cube_pipeline = .invalid,
+            .blit_cube_array_pipeline = .invalid,
         };
     };
     errdefer self.deinit();
@@ -158,8 +200,10 @@ pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler)
     };
     try us.uploadTexture(self.getTexture(self.debug_texture).?, &test_texture_data);
 
-    const blit_pipeline_desc: RenderPipelineDesc = .{
-        .data = .fromSource(blit_hlsl_shader, "@embedded/blit.hlsl"),
+    var blit_2d_pipeline_desc: RenderPipelineDesc = .{
+        .data = .fromSourceWithDefines(blit_hlsl_shader, "blit.hlsl", &.{
+            "BLIT_FROM_2D_TEXTURE",
+        }),
         .rasterization = .default,
         .multisample = .default,
         .depth_stencil = .no_depth_stencil,
@@ -168,10 +212,54 @@ pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler)
         }, null),
         .primitive_topology = .triangle_list,
     };
-    self.blit_pipeline = try self.loadRenderPipeline(
+    self.blit_2d_pipeline = try self.loadRenderPipeline(
         allocator,
-        blit_pipeline_desc,
-        "Blit Pipeline",
+        blit_2d_pipeline_desc,
+        "Blit 2D Pipeline",
+    );
+
+    blit_2d_pipeline_desc.data = .fromSourceWithDefines(
+        blit_hlsl_shader,
+        "blit.hlsl",
+        &.{"BLIT_FROM_2D_TEXTURE_ARRAY"},
+    );
+    self.blit_2d_array_pipeline = try self.loadRenderPipeline(
+        allocator,
+        blit_2d_pipeline_desc,
+        "Blit 2D Array Pipeline",
+    );
+
+    blit_2d_pipeline_desc.data = .fromSourceWithDefines(
+        blit_hlsl_shader,
+        "blit.hlsl",
+        &.{"BLIT_FROM_3D_TEXTURE"},
+    );
+    self.blit_3d_pipeline = try self.loadRenderPipeline(
+        allocator,
+        blit_2d_pipeline_desc,
+        "Blit 3D Pipeline",
+    );
+
+    blit_2d_pipeline_desc.data = .fromSourceWithDefines(
+        blit_hlsl_shader,
+        "blit.hlsl",
+        &.{"BLIT_FROM_CUBE_TEXTURE"},
+    );
+    self.blit_cube_pipeline = try self.loadRenderPipeline(
+        allocator,
+        blit_2d_pipeline_desc,
+        "Blit Cube Pipeline",
+    );
+
+    blit_2d_pipeline_desc.data = .fromSourceWithDefines(
+        blit_hlsl_shader,
+        "blit.hlsl",
+        &.{"BLIT_FROM_CUBE_TEXTURE_ARRAY"},
+    );
+    self.blit_cube_array_pipeline = try self.loadRenderPipeline(
+        allocator,
+        blit_2d_pipeline_desc,
+        "Blit Cube Array Pipeline",
     );
 
     return self;
@@ -194,6 +282,11 @@ pub fn deinit(self: *GPUResources) void {
         self.us.interface.destroyPipeline(entry.gpu_pipeline);
     }
     self.pipelines.deinit();
+    for (self.mesh_sets.items) |*mesh_set| {
+        mesh_set.deinit();
+    }
+    self.mesh_sets.deinit(self.mesh_set_allocator);
+    self.meshes.deinit();
     self.arena.deinit();
 }
 
@@ -379,6 +472,7 @@ pub const RenderPipelineDesc = struct {
         source: struct {
             data: []const u8,
             file_path: []const u8,
+            defines: []const []const u8,
         },
         compiled: struct {
             vs: []const u8,
@@ -386,7 +480,23 @@ pub const RenderPipelineDesc = struct {
         },
 
         pub fn fromSource(source: []const u8, file_path: []const u8) Data {
-            return .{ .source = .{ .data = source, .file_path = file_path } };
+            return .{ .source = .{
+                .data = source,
+                .file_path = file_path,
+                .defines = &.{},
+            } };
+        }
+
+        pub fn fromSourceWithDefines(
+            source: []const u8,
+            file_path: []const u8,
+            defines: []const []const u8,
+        ) Data {
+            return .{ .source = .{
+                .data = source,
+                .file_path = file_path,
+                .defines = defines,
+            } };
         }
 
         pub fn fromCompiled(vs: []const u8, fs: []const u8) Data {
@@ -419,22 +529,26 @@ fn makeRenderPipeline(
     var vs_blob: []const u8 = &.{};
     var fs_blob: []const u8 = &.{};
 
+    const temp = self.arena.allocator();
+
     switch (desc.data) {
         .source => |source| {
-            vs_blob = try self.sc.compile(self.arena.allocator(), .{
+            vs_blob = try self.sc.compile(temp, .{
                 .source = source.data,
                 .entry_point = "VSMain",
                 .stage = .vertex,
                 .file_path = source.file_path,
                 .target_backend = self.sc_backend,
+                .defines = source.defines,
             });
 
-            fs_blob = try self.sc.compile(self.arena.allocator(), .{
+            fs_blob = try self.sc.compile(temp, .{
                 .source = source.data,
                 .entry_point = "FSMain",
                 .stage = .fragment,
                 .file_path = source.file_path,
                 .target_backend = self.sc_backend,
+                .defines = source.defines,
             });
         },
         .compiled => |compiled| {
@@ -497,6 +611,206 @@ pub fn recreatePipeline(
     old_entry.handle = hm_handle;
 }
 
+pub const Mesh = struct {
+    handle: hm.Handle,
+    mesh_set: *MeshSet,
+
+    vertices_allocation: gpu.OffsetAllocator.Allocation,
+    vertex_slice: gpu.Buffer.Slice,
+    vertices_offset: usize,
+    vertices_count: usize,
+
+    indices_allocation: gpu.OffsetAllocator.Allocation,
+    index_slice: gpu.Buffer.Slice,
+    indices_offset: usize,
+    indices_count: usize,
+};
+
+pub fn loadMesh(
+    self: *GPUResources,
+    vertex_data: []const u8,
+    vertex_count: usize,
+    indices: []const u32,
+) !MeshHandle {
+    const mesh = try self.makeMesh(
+        vertex_data,
+        vertex_count,
+        indices,
+    );
+    const handle = try self.meshes.add(mesh);
+    return .fromHm(handle);
+}
+
+fn makeMesh(
+    self: *GPUResources,
+    vertex_data: []const u8,
+    vertex_count: usize,
+    indices: []const u32,
+) !Mesh {
+    const vertex_byte_length: u32 = @intCast(vertex_data.len);
+    const index_byte_length: u32 = @intCast(indices.len * @sizeOf(u32));
+    const mesh_set = try self.getMeshSet(vertex_byte_length, index_byte_length);
+
+    const vertex_allocation = mesh_set.vertex_allocator.allocate(vertex_byte_length) catch {
+        return error.MeshAllocationFailed;
+    };
+    errdefer mesh_set.vertex_allocator.free(vertex_allocation) catch {};
+    const index_allocation = mesh_set.index_allocator.allocate(index_byte_length) catch {
+        return error.MeshAllocationFailed;
+    };
+    errdefer mesh_set.index_allocator.free(index_allocation) catch {};
+
+    const vertex_slice: gpu.Buffer.Slice = .sub(
+        mesh_set.vertex_buffer,
+        vertex_allocation.offset,
+        .fromInt(vertex_allocation.size),
+    );
+    const index_slice: gpu.Buffer.Slice = .sub(
+        mesh_set.index_buffer,
+        index_allocation.offset,
+        .fromInt(index_allocation.size),
+    );
+
+    try self.us.uploadBuffer(vertex_slice.location(0), vertex_data);
+    try self.us.uploadBuffer(index_slice.location(0), @ptrCast(indices));
+
+    return .{
+        .handle = .nil,
+        .mesh_set = mesh_set,
+        .vertices_allocation = vertex_allocation,
+        .vertex_slice = vertex_slice,
+        .vertices_offset = @intCast(vertex_allocation.offset),
+        .vertices_count = vertex_count,
+        .indices_allocation = index_allocation,
+        .index_slice = index_slice,
+        .indices_offset = @intCast(index_allocation.offset),
+        .indices_count = indices.len,
+    };
+}
+
+fn getMeshSet(self: *GPUResources, vertex_byte_length: u32, index_byte_length: u32) !*MeshSet {
+    if (vertex_byte_length > max_vertex_buffer_size_per_mesh or
+        index_byte_length > max_index_buffer_size_per_mesh)
+    {
+        std.debug.print(
+            "Requested mesh size exceeds maximum per-mesh buffer size: vertex_byte_length={}, index_byte_length={}\n",
+            .{ vertex_byte_length, index_byte_length },
+        );
+        return error.MeshTooLarge;
+    }
+
+    for (self.mesh_sets.items) |*mesh_set| {
+        const vertex_alloc = mesh_set.vertex_allocator.allocate(vertex_byte_length) catch continue;
+        defer mesh_set.vertex_allocator.free(vertex_alloc) catch {};
+        const index_alloc = mesh_set.index_allocator.allocate(index_byte_length) catch continue;
+        defer mesh_set.index_allocator.free(index_alloc) catch {};
+
+        return mesh_set;
+    }
+
+    var new_mesh_set = try MeshSet.init(self.mesh_set_allocator, self.us);
+    errdefer new_mesh_set.deinit();
+
+    try self.mesh_sets.append(self.mesh_set_allocator, new_mesh_set);
+    return &self.mesh_sets.items[self.mesh_sets.items.len - 1];
+}
+
+pub fn getMesh(self: *GPUResources, handle: MeshHandle) ?Mesh {
+    if (handle == .invalid) return null;
+    const hm_handle: hm.Handle = handle.toHm();
+    const entry = self.textures.get(hm_handle) orelse return null;
+    return entry;
+}
+
+pub fn removeMesh(self: *GPUResources, handle: MeshHandle) void {
+    if (handle == .invalid) return;
+    const hm_handle: hm.Handle = handle.toHm();
+    const entry = self.meshes.remove(hm_handle) orelse return;
+    entry.mesh_set.vertex_allocator.free(entry.vertices_allocation) catch @panic("failed to free vertex allocation");
+    entry.mesh_set.index_allocator.free(entry.indices_allocation) catch @panic("failed to free index allocation");
+}
+
+pub fn recreateMesh(
+    self: *GPUResources,
+    allocator: std.mem.Allocator,
+    handle: MeshHandle,
+    vertex_data: []const u8,
+    vertex_count: usize,
+    indices: []const u32,
+) !void {
+    if (handle == .invalid) return;
+    const hm_handle: hm.Handle = handle.toHm();
+    const old_entry = self.meshes.get(hm_handle) orelse return;
+
+    old_entry.mesh_set.vertex_allocator.free(old_entry.vertices_allocation) catch @panic("failed to free vertex allocation");
+    old_entry.mesh_set.index_allocator.free(old_entry.indices_allocation) catch @panic("failed to free index allocation");
+
+    const new_entry = try self.makeMesh(
+        allocator,
+        vertex_data,
+        vertex_count,
+        indices,
+    );
+
+    old_entry.* = new_entry;
+    old_entry.handle = hm_handle;
+}
+
+const MeshSet = struct {
+    allocator: std.mem.Allocator,
+    us: *UploadStage,
+    vertex_allocator: gpu.OffsetAllocator,
+    vertex_buffer: *gpu.Buffer,
+    index_allocator: gpu.OffsetAllocator,
+    index_buffer: *gpu.Buffer,
+
+    pub fn init(allocator: std.mem.Allocator, us: *UploadStage) !MeshSet {
+        var vertex_allocator = try gpu.OffsetAllocator.init(
+            allocator,
+            max_vertex_buffer_size_per_mesh,
+            null,
+        );
+        errdefer vertex_allocator.deinit(allocator);
+
+        var index_allocator = try gpu.OffsetAllocator.init(
+            allocator,
+            max_index_buffer_size_per_mesh,
+            null,
+        );
+        errdefer index_allocator.deinit(allocator);
+
+        const vertex_buffer = try us.interface.createBuffer(
+            allocator,
+            .readonlyBuffer(max_vertex_buffer_size_per_mesh, .gpu_only),
+            "MeshSet Vertex Buffer",
+        );
+        errdefer us.interface.destroyBuffer(vertex_buffer);
+
+        const index_buffer = try us.interface.createBuffer(
+            allocator,
+            .readonlyBuffer(max_index_buffer_size_per_mesh, .gpu_only),
+            "MeshSet Index Buffer",
+        );
+        errdefer us.interface.destroyBuffer(index_buffer);
+
+        return .{
+            .allocator = allocator,
+            .us = us,
+            .vertex_allocator = vertex_allocator,
+            .vertex_buffer = vertex_buffer,
+            .index_allocator = index_allocator,
+            .index_buffer = index_buffer,
+        };
+    }
+
+    pub fn deinit(self: *MeshSet) void {
+        self.us.interface.destroyBuffer(self.vertex_buffer);
+        self.vertex_allocator.deinit(self.allocator);
+        self.us.interface.destroyBuffer(self.index_buffer);
+        self.index_allocator.deinit(self.allocator);
+    }
+};
+
 pub fn clearTemporaryResources(self: *GPUResources) void {
     _ = self.arena.reset(.retain_capacity);
 }
@@ -511,62 +825,6 @@ const ShaderCompiler = @import("ShaderCompiler.zig");
 const gpu = @import("../gpu/root.zig");
 const UploadStage = gpu.utils.UploadStage;
 
-const blit_hlsl_shader =
-    \\// this is set to slot 1
-    \\cbuffer BlitConstants : register(b1)
-    \\{
-    \\    uint texture_index;
-    \\    uint sampler_index;
-    \\    float top_left_x;
-    \\    float top_left_y;
-    \\    float bottom_right_x;
-    \\    float bottom_right_y;
-    \\};
-    \\
-    \\struct FSInput
-    \\{
-    \\    float4 position : SV_POSITION;
-    \\    float2 uv : TEXCOORD0;
-    \\};
-    \\
-    \\FSInput VSMain(uint vertexID : SV_VertexID)
-    \\{
-    \\    float2 top_left = float2(top_left_x, top_left_y);
-    \\    float2 top_right = float2(bottom_right_x, top_left_y);
-    \\    float2 bottom_left = float2(top_left_x, bottom_right_y);
-    \\    float2 bottom_right = float2(bottom_right_x, bottom_right_y);
-    \\    
-    \\    float4 positions[6] = {
-    \\        float4(top_left.x, top_left.y, 0.0f, 1.0f),
-    \\        float4(bottom_right.x, bottom_right.y, 0.0f, 1.0f),
-    \\        float4(bottom_left.x, bottom_left.y, 0.0f, 1.0f),
-    \\        float4(top_left.x, top_left.y, 0.0f, 1.0f),
-    \\        float4(top_right.x, top_right.y, 0.0f, 1.0f),
-    \\        float4(bottom_right.x, bottom_right.y, 0.0f, 1.0f),
-    \\    };
-    \\
-    \\    float2 uvs[6] = {
-    \\        float2(0.0f, 0.0f),
-    \\        float2(1.0f, 1.0f),
-    \\        float2(0.0f, 1.0f),
-    \\        float2(0.0f, 0.0f),
-    \\        float2(1.0f, 0.0f),
-    \\        float2(1.0f, 1.0f),
-    \\    };
-    \\
-    \\    FSInput output;
-    \\    output.position = positions[vertexID];
-    \\    output.uv = uvs[vertexID];
-    \\
-    \\    return output;
-    \\}
-    \\
-    \\float4 FSMain(FSInput input) : SV_TARGET
-    \\{
-    \\    Texture2D tex = ResourceDescriptorHeap[texture_index];
-    \\    SamplerState s = SamplerDescriptorHeap[sampler_index];
-    \\    return tex.Sample(s, input.uv, 0);
-    \\}
-;
+const blit_hlsl_shader = @embedFile("shaders/blit.hlsl");
 
 const gpu_structures = @import("gpu_structures.zig");

@@ -1002,7 +1002,11 @@ fn parseGlb(self: *Gltf, glb_buffer: []align(4) const u8) !void {
     };
 
     try self.parseGltfJson(json_buffer);
-    self.glb_binary = binary_buffer;
+    self.assignBinaryBuffer(binary_buffer);
+}
+
+pub fn assignBinaryBuffer(self: *Gltf, binary: []align(4) const u8) void {
+    self.glb_binary = binary;
 
     const buffer_views = self.data.buffer_views;
 
@@ -1011,7 +1015,7 @@ fn parseGlb(self: *Gltf, glb_buffer: []align(4) const u8) !void {
             const buffer_view = buffer_views[buffer_view_index];
             const start = buffer_view.byte_offset;
             const end = start + buffer_view.byte_length;
-            image.data = binary_buffer[start..end];
+            image.data = binary[start..end];
         }
     }
 }

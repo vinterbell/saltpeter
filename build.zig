@@ -12,8 +12,31 @@ pub fn build(b: *std.Build) void {
         .link_libcpp = true,
     });
     core_module.addCSourceFile(.{
-        .file = b.path("core/assets/stb.c"),
+        .file = b.path("core/vendor/stb/stb.c"),
     });
+    core_module.addCSourceFiles(.{
+        .root = b.path("core/vendor/meshoptimizer"),
+        .files = &.{
+            "allocator.cpp",
+            "clusterizer.cpp",
+            "indexanalyzer.cpp",
+            "indexcodec.cpp",
+            "indexgenerator.cpp",
+            "overdrawoptimizer.cpp",
+            "partition.cpp",
+            "quantization.cpp",
+            "rasterizer.cpp",
+            "simplifier.cpp",
+            "spatialorder.cpp",
+            "stripifier.cpp",
+            "vcacheoptimizer.cpp",
+            "vertexcodec.cpp",
+            "vertexfilter.cpp",
+            "vfetchoptimizer.cpp",
+        },
+        .flags = &.{""},
+    });
+    core_module.addIncludePath(b.path("core/vendor/cgltf/"));
 
     if (target.result.os.tag == .windows) {
         core_module.addCSourceFile(.{

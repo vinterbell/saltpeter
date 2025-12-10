@@ -13,6 +13,7 @@ pub const Backend = enum {
 };
 
 pub const OptimizationLevel = enum {
+    debug,
     none,
     o1,
     o2,
@@ -25,7 +26,7 @@ pub const Desc = struct {
     file_path: []const u8,
     stage: Stage,
     defines: []const []const u8 = &.{},
-    optimization_level: OptimizationLevel = .o3,
+    optimization_level: OptimizationLevel = .debug,
     target_backend: Backend,
 };
 
@@ -121,9 +122,9 @@ pub fn compile(self: *ShaderCompiler, allocator: std.mem.Allocator, desc: Desc) 
         desc.entry_point,
     );
     const target_profile = switch (desc.stage) {
-        .vertex => win32.L("vs_6_6"),
-        .fragment => win32.L("ps_6_6"),
-        .compute => win32.L("cs_6_6"),
+        .vertex => win32.L("vs_6_7"),
+        .fragment => win32.L("ps_6_7"),
+        .compute => win32.L("cs_6_7"),
         // else => return error.UnsupportedShaderStage,
     };
     try args.appendSlice(temp, &.{
@@ -167,12 +168,20 @@ pub fn compile(self: *ShaderCompiler, allocator: std.mem.Allocator, desc: Desc) 
         .o1 => win32.L("-O1"),
         .o2 => win32.L("-O2"),
         .o3 => win32.L("-O3"),
+        .debug => win32.L(""),
     };
     try args.append(temp, optimization_level_arg);
 
     if (builtin.os.tag != .windows) {
         try args.appendSlice(temp, &.{
             win32.L("-Vd"),
+        });
+    }
+
+    if (desc.optimization_level == .debug and desc.target_backend == .d3d12) {
+        try args.appendSlice(temp, &.{
+            win32.L("-Zi"),
+            win32.L("-Qembed_debug"),
         });
     }
 
@@ -332,7 +341,7 @@ pub const IncludeHandler = extern struct {
 const std = @import("std");
 const builtin = @import("builtin");
 
-const windows = @import("../windows/root.zig");
+const windows = @import("../vendor/windows/root.zig");
 const win32 = windows.win32;
 const dxc = windows.dxc;
 const d3dcommon = windows.d3dcommon;

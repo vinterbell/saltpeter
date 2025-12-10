@@ -70,7 +70,7 @@ pub const Device = struct {
             if (d3d12.GetDebugInterface(win32.riid(d3d12d.IDebug1), @ptrCast(&debug_controller)) == win32.S_OK) {
                 debug_controller.?.EnableDebugLayer();
                 // if (options.validation == .full) {
-                //     debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
+                debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
                 // }
                 factory_flags |= dxgi.CREATE_FACTORY_DEBUG;
             }
@@ -4454,7 +4454,7 @@ const Error = gpu.Error;
 
 const spatial = @import("../math/spatial.zig");
 
-const windows = @import("../windows/root.zig");
+const windows = @import("../vendor/windows/root.zig");
 const win32 = windows.win32;
 const dxgi = windows.dxgi;
 const d3d12 = windows.d3d12;

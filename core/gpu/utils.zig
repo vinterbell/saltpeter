@@ -425,15 +425,15 @@ pub const UploadStage = struct {
         const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
         const staging_buffer_allocator = &self.staging_buffers[frame_index];
 
-        const staging_buffer = try staging_buffer_allocator.allocate(data.len);
-        const destination_data = (staging_buffer.buffer.cpuAddress() orelse
-            @panic("Staging buffer not CPU accessible"))[staging_buffer.offset..][0..data.len];
+        const bufslice = try staging_buffer_allocator.allocate(data.len);
+        const destination_data = (self.interface.getBufferCPUAddress(bufslice.buffer) orelse
+            @panic("Staging buffer not CPU accessible"))[bufslice.offset..][0..data.len];
 
         @memcpy(destination_data, data);
 
         try self.pending_buffer_uploads.appendBounded(.{
             .destination = slice,
-            .staging_buffer = staging_buffer,
+            .staging_buffer = bufslice,
         });
     }
 

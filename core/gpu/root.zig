@@ -77,6 +77,13 @@ pub const Buffer = opaque {
     pub const Location = struct {
         buffer: *Buffer,
         offset: usize,
+
+        pub fn start(buffer: *Buffer) Location {
+            return .{
+                .buffer = buffer,
+                .offset = 0,
+            };
+        }
     };
 
     pub const Slice = struct {
@@ -1350,3 +1357,4 @@ const spatial = @import("../math/spatial.zig");
 const platform = @import("../platform/root.zig");
 
 pub const utils = @import("utils.zig");
+pub const OffsetAllocator = @import("OffsetAllocator.zig");
