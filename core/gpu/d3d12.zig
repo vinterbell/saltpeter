@@ -70,7 +70,7 @@ pub const Device = struct {
             if (d3d12.GetDebugInterface(win32.riid(d3d12d.IDebug1), @ptrCast(&debug_controller)) == win32.S_OK) {
                 debug_controller.?.EnableDebugLayer();
                 // if (options.validation == .full) {
-                // debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
+                debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
                 // }
                 factory_flags |= dxgi.CREATE_FACTORY_DEBUG;
             }
@@ -2462,7 +2462,7 @@ const Swapchain = struct {
 
     fn getBackbuffer(
         swapchain: *Swapchain,
-    ) Error!gpu.Swapchain.Backbuffer {
+    ) gpu.Swapchain.Backbuffer {
         return .{
             .texture = swapchain.textures[swapchain.backbuffer_index].?.toGpuTexture(),
             .width = swapchain.width,
@@ -3541,7 +3541,7 @@ const impl = struct {
     fn getSwapchainBackbuffer(
         _: *anyopaque,
         swapchain: *gpu.Swapchain,
-    ) Error!gpu.Swapchain.Backbuffer {
+    ) gpu.Swapchain.Backbuffer {
         const sc: *Swapchain = .fromGpuSwapchain(swapchain);
         return sc.getBackbuffer();
     }

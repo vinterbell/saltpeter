@@ -3,10 +3,6 @@ cbuffer BlitConstants : register(b1)
 {
     uint texture_index;
     uint sampler_index;
-    float top_left_x;
-    float top_left_y;
-    float bottom_right_x;
-    float bottom_right_y;
     uint mip_level;
     float array_layer_or_depth;
 };
@@ -19,33 +15,14 @@ struct FSInput
 
 FSInput VSMain(uint vertexID : SV_VertexID)
 {
-    float2 top_left = float2(top_left_x, top_left_y);
-    float2 top_right = float2(bottom_right_x, top_left_y);
-    float2 bottom_left = float2(top_left_x, bottom_right_y);
-    float2 bottom_right = float2(bottom_right_x, bottom_right_y);
+    float2 uv = float2((vertexID << 1) & 2, vertexID & 2);
     
-    float4 positions[6] = {
-        float4(top_left.x, top_left.y, 0.0f, 1.0f),
-        float4(bottom_right.x, bottom_right.y, 0.0f, 1.0f),
-        float4(bottom_left.x, bottom_left.y, 0.0f, 1.0f),
-        float4(top_left.x, top_left.y, 0.0f, 1.0f),
-        float4(top_right.x, top_right.y, 0.0f, 1.0f),
-        float4(bottom_right.x, bottom_right.y, 0.0f, 1.0f),
-    };
-
-    float2 uvs[6] = {
-        float2(0.0f, 0.0f),
-        float2(1.0f, 1.0f),
-        float2(0.0f, 1.0f),
-        float2(0.0f, 0.0f),
-        float2(1.0f, 0.0f),
-        float2(1.0f, 1.0f),
-    };
+    float4 position = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
 
     FSInput output;
-    output.position = positions[vertexID];
-    output.uv = uvs[vertexID];
-
+    output.position = position;
+    output.uv = uv;
+    
     return output;
 }
 

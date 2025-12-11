@@ -32,23 +32,10 @@ pub fn main() !void {
     );
     defer view.deinit();
 
-    const sky_pipeline_handle = try rctx.gres.loadRenderPipeline(allocator, .{
-        .data = .fromSource(
-            \\#include "core/graphics/shaders/sky.hlsl"
-        , "sky"),
-        .rasterization = .default,
-        .multisample = .default,
-        .depth_stencil = .no_depth_stencil,
-        .target_state = .targets(&.{
-            .noBlend(.rgba8unorm),
-        }, null),
-        .primitive_topology = .triangle_list,
-    }, "sky_pipeline");
-
-    const sky_pipeline = rctx.gres.getPipeline(sky_pipeline_handle) orelse @panic("missing sky pipeline");
-
-    var renderer = try sp.graphics.Renderer.init(&rctx.ren, &view, .{
-        .sky_pipeline = sky_pipeline,
+    var renderer = try sp.graphics.Renderer.init(allocator, .{
+        .gres = &rctx.gres,
+        .rd = &rctx.ren,
+        .view = &view,
     });
     defer renderer.deinit();
 
@@ -138,7 +125,7 @@ pub fn main() !void {
     );
     std.debug.print("Loaded scene with {} meshes\n", .{scene.meshes.items.len});
 
-    const blit_pipeline = rctx.gres.getPipeline(rctx.gres.blit_2d_pipeline) orelse @panic("missing blit pipeline");
+    // const blit_pipeline = rctx.gres.getPipeline(rctx.gres.blit_2d_pipeline) orelse @panic("missing blit pipeline");
 
     // try rctx.gres.recreateTexture(
     //     allocator,
@@ -201,16 +188,7 @@ pub fn main() !void {
         );
         camera.setView(translated_view);
 
-        // const t = linalg.util.getTranslationVec(translated_view);
-        // std.debug.print("Camera position: ({}, {}, {})\n", .{ t[0], t[1], t[2] });
-
-        // const r = linalg.util.getRotationQuat(translated_view);
-        // const euler = linalg.quatToRollPitchYaw(r);
-        // std.debug.print("Camera rotation (radians): ({}, {}, {})\n", .{ euler[0], euler[1], euler[2] });
-
         rctx.gres.clearTemporaryResources();
-
-        const sampler = rctx.gres.getSampler(.linear);
 
         if (window.popResize()) |new_size| {
             _ = try rctx.interface.resizeSwapchain(swapchain, new_size.width, new_size.height);
@@ -218,62 +196,12 @@ pub fn main() !void {
             camera.setWidthHeight(new_size.width, new_size.height);
         }
 
-        const descriptor_index_albedo = rctx.interface.getDescriptorIndex(view.targets.albedo_metallic.shader_resource_view);
-
         try rctx.ren.beginFrame();
 
         const cmd = rctx.ren.commandList();
+        renderer.useSwapchain(swapchain, .final_composite);
         try renderer.begin(cmd, &camera);
-
         try renderer.end(cmd);
-
-        const backbuffer = try rctx.ren.useSwapchain(swapchain);
-        {
-            rctx.interface.commandTextureBarrier(
-                cmd,
-                backbuffer.texture,
-                0,
-                .{ .present = true },
-                .{ .render_target = true },
-            );
-            defer rctx.interface.commandTextureBarrier(
-                cmd,
-                backbuffer.texture,
-                0,
-                .{ .render_target = true },
-                .{ .present = true },
-            );
-
-            rctx.interface.commandBeginRenderPass(cmd, .colorOnly(&.{
-                .color(.first(backbuffer.texture), .loadClear(.{ 0, 0, 0, 1.0 }), .store),
-            }));
-            {
-                defer rctx.interface.commandEndRenderPass(cmd);
-                rctx.interface.commandBindPipeline(cmd, blit_pipeline);
-                rctx.interface.commandSetGraphicsConstants(
-                    cmd,
-                    .buffer1,
-                    sp.graphics.gpu_structures.BlitConstants,
-                    .{
-                        .texture_index = descriptor_index_albedo,
-                        .sampler_index = sampler,
-                        .rect = .{
-                            -1.0, 1.0,
-                            1.0,  -1.0,
-                        },
-                    },
-                );
-                rctx.interface.commandDraw(cmd, 6, 1, 0, 0);
-            }
-        }
-
-        rctx.interface.commandTextureBarrier(
-            cmd,
-            view.targets.albedo_metallic.texture,
-            0,
-            .{ .present = true },
-            .{ .render_target = true },
-        );
 
         try rctx.us.doUploads();
         rctx.us.reset();

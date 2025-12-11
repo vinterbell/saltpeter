@@ -496,7 +496,7 @@ pub fn acquireNextSwapchainImage(self: Interface, swapchain: *Swapchain) Error!v
 pub fn getSwapchainBackbuffer(
     self: Interface,
     swapchain: *Swapchain,
-) Error!Swapchain.Backbuffer {
+) Swapchain.Backbuffer {
     return self.vtable.get_swapchain_backbuffer(self.data, swapchain);
 }
 
@@ -717,7 +717,7 @@ pub const VTable = struct {
     create_swapchain: *const fn (data: *anyopaque, allocator: std.mem.Allocator, desc: *const Swapchain.Desc, debug_name: []const u8) Error!*Swapchain,
     destroy_swapchain: *const fn (data: *anyopaque, swapchain: *Swapchain) void,
     acquire_next_swapchain_image: *const fn (data: *anyopaque, swapchain: *Swapchain) Error!void,
-    get_swapchain_backbuffer: *const fn (data: *anyopaque, swapchain: *Swapchain) Error!Swapchain.Backbuffer,
+    get_swapchain_backbuffer: *const fn (data: *anyopaque, swapchain: *Swapchain) Swapchain.Backbuffer,
     resize_swapchain: *const fn (data: *anyopaque, swapchain: *Swapchain, width: u32, height: u32) Error!bool, // returns if resized
 
     // texture

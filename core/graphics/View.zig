@@ -15,6 +15,14 @@ const Targets = struct {
     // rgb: normal, a: roughness, rgba float
     normal_roughness: Unit,
     depth_texture: Unit,
+    final_composite: Unit,
+};
+
+pub const UnitId = enum {
+    albedo_metallic,
+    normal_roughness,
+    depth_texture,
+    final_composite,
 };
 
 pub fn init(
@@ -37,6 +45,15 @@ pub fn deinit(self: *View) void {
     self.deinitSizedResources();
 }
 
+pub fn getUnit(self: *View, id: UnitId) *Unit {
+    return switch (id) {
+        .albedo_metallic => &self.targets.albedo_metallic,
+        .normal_roughness => &self.targets.normal_roughness,
+        .depth_texture => &self.targets.depth_texture,
+        .final_composite => &self.targets.final_composite,
+    };
+}
+
 pub fn resize(self: *View, allocator: std.mem.Allocator, new_width: u32, new_height: u32) gpu.Error!void {
     if (self.width == new_width and self.height == new_height) {
         return;
@@ -48,21 +65,21 @@ pub fn resize(self: *View, allocator: std.mem.Allocator, new_width: u32, new_hei
     try self.initSizedResources(allocator);
 }
 
-pub fn beginRenderPass(self: *View, cmd: *gpu.CommandList) !void {
-    try self.rd.interface.commandBeginRenderPass(cmd, .{
-        .color_attachments = &.{
-            .color(.first(self.targets.albedo_metallic.texture), .loadClear(.{ 0, 0, 0, 1 }), .store),
-            .color(.first(self.targets.normal_roughness.texture), .loadClear(.{ 0, 0, 0, 1 }), .store),
-        },
-        .depth_stencil_attachment = .depthStencil(
-            .first(self.targets.depth_texture.texture),
-            .loadClear(1.0),
-            .store,
-            .discard,
-            .discard,
-        ),
-    });
-}
+// pub fn beginRenderPass(self: *View, cmd: *gpu.CommandList) !void {
+//     try self.rd.interface.commandBeginRenderPass(cmd, .{
+//         .color_attachments = &.{
+//             .color(.first(self.targets.albedo_metallic.texture), .loadClear(.{ 0, 0, 0, 1 }), .store),
+//             .color(.first(self.targets.normal_roughness.texture), .loadClear(.{ 0, 0, 0, 1 }), .store),
+//         },
+//         .depth_stencil_attachment = .depthStencil(
+//             .first(self.targets.depth_texture.texture),
+//             .loadClear(1.0),
+//             .store,
+//             .discard,
+//             .discard,
+//         ),
+//     });
+// }
 
 fn initSizedResources(self: *View, allocator: std.mem.Allocator) gpu.Error!void {
     const interface = self.rd.interface;
@@ -105,12 +122,26 @@ fn initSizedResources(self: *View, allocator: std.mem.Allocator) gpu.Error!void 
         "View_Targets_Depth_Texture",
     );
     errdefer self.targets.depth_texture.deinit(interface);
+
+    self.targets.final_composite = try Unit.init(
+        allocator,
+        .{
+            .width = self.width,
+            .height = self.height,
+            .format = .rgba8unorm,
+            .usage = .read_only_render_target,
+        },
+        interface,
+        "View_Targets_Final_Composite",
+    );
+    errdefer self.targets.final_composite.deinit(interface);
 }
 
 fn deinitSizedResources(self: *View) void {
     self.targets.depth_texture.deinit(self.rd.interface);
     self.targets.normal_roughness.deinit(self.rd.interface);
     self.targets.albedo_metallic.deinit(self.rd.interface);
+    self.targets.final_composite.deinit(self.rd.interface);
 }
 
 const Unit = struct {

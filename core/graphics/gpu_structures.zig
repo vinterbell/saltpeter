@@ -6,13 +6,9 @@ pub fn BufferPtr(comptime T: type) type {
     };
 }
 
-pub const BlitConstants = extern struct {
+pub const FullscreenBlit = extern struct {
     texture_index: gpu.Descriptor.Index,
     sampler_index: gpu.Descriptor.Index,
-    rect: [4]f32 = .{
-        -1.0, 1.0,
-        1.0,  -1.0,
-    },
     mip_level: u32 = 0,
     array_layer_or_depth: f32 = 0.0,
 };

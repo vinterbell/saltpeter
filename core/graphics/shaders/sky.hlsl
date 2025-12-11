@@ -59,6 +59,6 @@ float4 FSMain(FSInput input) : SV_TARGET
     const float dx = length(input.position.xz);
     const float pitch = atan2(dy, dx); // -pi/2 to pi/2
     // return float4(get_sky(pitch), 1.0);
-    // return float4(get_sky(pitch / (0.5 * PI) + 0.5), 1.0);
-    return float4(input.position * 0.5 + 0.5, 1.0);
+    return float4(get_sky(pitch / (0.5 * PI) + 0.5), 1.0);
+    // return float4(input.position * 0.5 + 0.5, 1.0);
 }

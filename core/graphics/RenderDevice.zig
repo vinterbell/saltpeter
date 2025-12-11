@@ -186,19 +186,21 @@ pub fn allocateConstantBuffer(self: *RenderDevice, comptime T: type, data: T) er
 pub fn useSwapchain(
     self: *RenderDevice,
     swapchain: *gpu.Swapchain,
-) Error!gpu.Swapchain.Backbuffer {
+) gpu.Swapchain.Backbuffer {
     // check if it's been blitted this frame already
     for (self.swapchains[0..self.swapchain_count]) |sc| {
         // should not blit same swapchain multiple times
         if (sc == swapchain) {
-            return try self.interface.getSwapchainBackbuffer(swapchain);
+            return self.interface.getSwapchainBackbuffer(swapchain);
         }
     }
     self.swapchains[self.swapchain_count] = swapchain;
     self.swapchain_count += 1;
 
-    try self.interface.acquireNextSwapchainImage(swapchain);
-    const backbuffer = try self.interface.getSwapchainBackbuffer(swapchain);
+    self.interface.acquireNextSwapchainImage(swapchain) catch {
+        @panic("Failed to acquire next swapchain image");
+    };
+    const backbuffer = self.interface.getSwapchainBackbuffer(swapchain);
     return backbuffer;
 }
 
