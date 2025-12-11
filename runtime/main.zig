@@ -244,12 +244,13 @@ pub fn main() !void {
                 .{ .present = true },
             );
 
-            try rctx.interface.commandBeginRenderPass(cmd, .colorOnly(&.{
+            rctx.interface.commandBeginRenderPass(cmd, .colorOnly(&.{
                 .color(.first(backbuffer.texture), .loadClear(.{ 0, 0, 0, 1.0 }), .store),
             }));
             {
+                defer rctx.interface.commandEndRenderPass(cmd);
                 rctx.interface.commandBindPipeline(cmd, blit_pipeline);
-                try rctx.interface.commandSetGraphicsConstants(
+                rctx.interface.commandSetGraphicsConstants(
                     cmd,
                     .buffer1,
                     sp.graphics.gpu_structures.BlitConstants,
@@ -264,7 +265,6 @@ pub fn main() !void {
                 );
                 rctx.interface.commandDraw(cmd, 6, 1, 0, 0);
             }
-            try rctx.interface.commandEndRenderPass(cmd);
         }
 
         rctx.interface.commandTextureBarrier(

@@ -94,16 +94,16 @@ pub fn commandSignalFence(
     cmd_list: *CommandList,
     fence: *Fence,
     fence_value: u64,
-) Error!void {
-    try self.vtable.command_signal_fence(self.data, cmd_list, fence, fence_value);
+) void {
+    self.vtable.command_signal_fence(self.data, cmd_list, fence, fence_value);
 }
 
 pub fn commandPresentSwapchain(
     self: Interface,
     cmd_list: *CommandList,
     swapchain: *Swapchain,
-) Error!void {
-    try self.vtable.command_present_swapchain(self.data, cmd_list, swapchain);
+) void {
+    self.vtable.command_present_swapchain(self.data, cmd_list, swapchain);
 }
 
 pub fn submitCommandList(self: Interface, cmd_list: *CommandList) Error!void {
@@ -176,8 +176,8 @@ pub fn commandSetGraphicsConstants(
     slot: ConstantSlot,
     comptime T: type,
     data: T,
-) Error!void {
-    return self.commandSetGraphicsConstantsBytes(
+) void {
+    self.commandSetGraphicsConstantsBytes(
         cmd_list,
         slot,
         @as([]const u8, @ptrCast(&data)),
@@ -189,8 +189,8 @@ pub fn commandSetGraphicsConstantsBytes(
     cmd_list: *CommandList,
     slot: ConstantSlot,
     data: []const u8,
-) Error!void {
-    return self.vtable.command_set_graphics_constants(self.data, cmd_list, slot, data);
+) void {
+    self.vtable.command_set_graphics_constants(self.data, cmd_list, slot, data);
 }
 
 pub fn commandSetComputeConstants(
@@ -199,8 +199,8 @@ pub fn commandSetComputeConstants(
     slot: ConstantSlot,
     comptime T: type,
     data: T,
-) Error!void {
-    return self.commandSetComputeConstantsBytes(
+) void {
+    self.commandSetComputeConstantsBytes(
         cmd_list,
         slot,
         @as([]const u8, &data),
@@ -212,20 +212,20 @@ pub fn commandSetComputeConstantsBytes(
     cmd_list: *CommandList,
     slot: ConstantSlot,
     data: []const u8,
-) Error!void {
-    return self.vtable.command_set_compute_constants(self.data, cmd_list, slot, data);
+) void {
+    self.vtable.command_set_compute_constants(self.data, cmd_list, slot, data);
 }
 
 pub fn commandBeginRenderPass(
     self: Interface,
     cmd_list: *CommandList,
     desc: RenderPass.Desc,
-) Error!void {
-    try self.vtable.command_begin_render_pass(self.data, cmd_list, &desc);
+) void {
+    self.vtable.command_begin_render_pass(self.data, cmd_list, &desc);
 }
 
-pub fn commandEndRenderPass(self: Interface, cmd_list: *CommandList) Error!void {
-    try self.vtable.command_end_render_pass(self.data, cmd_list);
+pub fn commandEndRenderPass(self: Interface, cmd_list: *CommandList) void {
+    self.vtable.command_end_render_pass(self.data, cmd_list);
 }
 
 pub fn commandSetViewports(
@@ -560,9 +560,9 @@ pub const VTable = struct {
     reset_command_allocator: *const fn (data: *anyopaque, cmd_list: *CommandList) void,
     begin_command_list: *const fn (data: *anyopaque, cmd_list: *CommandList) Error!void,
     end_command_list: *const fn (data: *anyopaque, cmd_list: *CommandList) Error!void,
-    command_wait_on_fence: *const fn (data: *anyopaque, cmd_list: *CommandList, fence: *Fence, fence_value: u64) Error!void,
-    command_signal_fence: *const fn (data: *anyopaque, cmd_list: *CommandList, fence: *Fence, fence_value: u64) Error!void,
-    command_present_swapchain: *const fn (data: *anyopaque, cmd_list: *CommandList, swapchain: *Swapchain) Error!void,
+    command_wait_on_fence: *const fn (data: *anyopaque, cmd_list: *CommandList, fence: *Fence, fence_value: u64) void,
+    command_signal_fence: *const fn (data: *anyopaque, cmd_list: *CommandList, fence: *Fence, fence_value: u64) void,
+    command_present_swapchain: *const fn (data: *anyopaque, cmd_list: *CommandList, swapchain: *Swapchain) void,
     submit_command_list: *const fn (data: *anyopaque, cmd_list: *CommandList) Error!void,
     reset_command_list: *const fn (data: *anyopaque, cmd_list: *CommandList) void,
     command_texture_barrier: *const fn (
@@ -593,19 +593,19 @@ pub const VTable = struct {
         cmd_list: *CommandList,
         slot: ConstantSlot,
         data: []const u8,
-    ) Error!void,
+    ) void,
     command_set_compute_constants: *const fn (
         data: *anyopaque,
         cmd_list: *CommandList,
         slot: ConstantSlot,
         data: []const u8,
-    ) Error!void,
+    ) void,
     command_begin_render_pass: *const fn (
         data: *anyopaque,
         cmd_list: *CommandList,
         desc: *const RenderPass.Desc,
-    ) Error!void,
-    command_end_render_pass: *const fn (data: *anyopaque, cmd_list: *CommandList) Error!void,
+    ) void,
+    command_end_render_pass: *const fn (data: *anyopaque, cmd_list: *CommandList) void,
     command_set_viewports: *const fn (data: *anyopaque, cmd_list: *CommandList, viewports: []const spatial.Viewport) void,
     command_set_scissors: *const fn (data: *anyopaque, cmd_list: *CommandList, scissors: []const spatial.Rect) void,
     command_set_blend_constants: *const fn (data: *anyopaque, cmd_list: *CommandList, blend_constants: [4]f32) void,

@@ -350,7 +350,7 @@ pub const UploadStage = struct {
         }
         try self.interface.endCommandList(cmd);
         self.fence_value += 1;
-        try self.interface.commandSignalFence(cmd, self.fence, self.fence_value);
+        self.interface.commandSignalFence(cmd, self.fence, self.fence_value);
         try self.interface.submitCommandList(cmd);
 
         // TODO: transition barriers for vulkan

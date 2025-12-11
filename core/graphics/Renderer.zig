@@ -48,7 +48,7 @@ pub fn begin(self: *SceneRenderer, cmd: *gpu.CommandList, camera: *const graphic
         .ambient_light_color = self.ambient_light_color,
     });
 
-    try interface.commandSetGraphicsConstants(
+    interface.commandSetGraphicsConstants(
         cmd,
         .root,
         gpu_structures.RootConstants,
@@ -58,7 +58,7 @@ pub fn begin(self: *SceneRenderer, cmd: *gpu.CommandList, camera: *const graphic
     );
 
     // draw sky
-    try self.drawSky(cmd);
+    self.drawSky(cmd);
 }
 
 pub fn end(self: *SceneRenderer, cmd: *gpu.CommandList) !void {
@@ -67,17 +67,17 @@ pub fn end(self: *SceneRenderer, cmd: *gpu.CommandList) !void {
     // try self.rd.interface.commandEndRenderPass(cmd);
 }
 
-fn drawSky(self: *SceneRenderer, cmd: *gpu.CommandList) !void {
+fn drawSky(self: *SceneRenderer, cmd: *gpu.CommandList) void {
     const interface = self.rd.interface;
 
-    try interface.commandBeginRenderPass(cmd, .colorOnly(&.{
+    interface.commandBeginRenderPass(cmd, .colorOnly(&.{
         .color(.first(self.view.targets.albedo_metallic.texture), .discard, .store),
     }));
     {
+        defer interface.commandEndRenderPass(cmd);
         interface.commandBindPipeline(cmd, self.sky_pipeline);
         interface.commandDraw(cmd, 36, 1, 0, 0);
     }
-    try interface.commandEndRenderPass(cmd);
 
     interface.commandTextureBarrier(
         cmd,

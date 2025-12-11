@@ -157,11 +157,11 @@ pub fn endFrame(self: *RenderDevice) Error!void {
     self.frame_fence_values[frame_index] = self.current_frame_fence_value;
 
     for (self.swapchains[0..self.swapchain_count]) |swapchain| {
-        try self.interface.commandPresentSwapchain(cmd, swapchain);
+        self.interface.commandPresentSwapchain(cmd, swapchain);
     }
     self.swapchain_count = 0;
 
-    try self.interface.commandSignalFence(cmd, self.frame_fence, self.current_frame_fence_value);
+    self.interface.commandSignalFence(cmd, self.frame_fence, self.current_frame_fence_value);
     try self.interface.submitCommandList(cmd);
 
     self.interface.endFrame();

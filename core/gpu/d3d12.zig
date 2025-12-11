@@ -1019,10 +1019,10 @@ const CommandList = struct {
         return;
     }
 
-    fn wait(self: *CommandList, fence: *Fence, value: u64) Error!void {
+    fn wait(self: *CommandList, fence: *Fence, value: u64) void {
         if (self.pending_waits_count >= max_fence_operations) {
             log.err("Exceeded maximum pending fence waits in command list ({s})", .{self.name});
-            return error.OutOfMemory;
+            return;
         }
         self.pending_waits[self.pending_waits_count] = .{
             .fence = fence,
@@ -1032,10 +1032,10 @@ const CommandList = struct {
         return;
     }
 
-    fn signal(self: *CommandList, fence: *Fence, value: u64) Error!void {
+    fn signal(self: *CommandList, fence: *Fence, value: u64) void {
         if (self.pending_signals_count >= max_fence_operations) {
             log.err("Exceeded maximum pending fence signals in command list ({s})", .{self.name});
-            return error.OutOfMemory;
+            return;
         }
         self.pending_signals[self.pending_signals_count] = .{
             .fence = fence,
@@ -1045,10 +1045,10 @@ const CommandList = struct {
         return;
     }
 
-    fn present(self: *CommandList, swapchain: *Swapchain) Error!void {
+    fn present(self: *CommandList, swapchain: *Swapchain) void {
         if (self.pending_swapchains_count >= max_present_swapchains) {
             log.err("Exceeded maximum pending swapchains in command list ({s})", .{self.name});
-            return error.OutOfMemory;
+            return;
         }
         self.pending_swapchains[self.pending_swapchains_count] = swapchain;
         self.pending_swapchains_count += 1;
@@ -1249,7 +1249,7 @@ const CommandList = struct {
         }
     }
 
-    fn setComputeConstants(self: *CommandList, slot: gpu.ConstantSlot, data: []const u8) Error!void {
+    fn setComputeConstants(self: *CommandList, slot: gpu.ConstantSlot, data: []const u8) void {
         const buffer_slot: u32 = switch (slot) {
             .root => {
                 const count_constants = @divFloor(data.len, 4) + 1;
@@ -1266,14 +1266,17 @@ const CommandList = struct {
             .buffer2 => 2,
         };
 
-        const address = try self.device.allocateConstant(data);
+        const address = self.device.allocateConstant(data) catch {
+            log.err("Failed to allocate constant buffer for compute root constants ({s})", .{self.name});
+            return;
+        };
         self.command_list.igraphicscommandlist.SetComputeRootConstantBufferView(
             buffer_slot,
             address,
         );
     }
 
-    fn setGraphicsConstants(self: *CommandList, slot: gpu.ConstantSlot, data: []const u8) Error!void {
+    fn setGraphicsConstants(self: *CommandList, slot: gpu.ConstantSlot, data: []const u8) void {
         const buffer_slot: u32 = switch (slot) {
             .root => {
                 const count_constants = @divFloor(data.len, 4) + 1;
@@ -1290,7 +1293,10 @@ const CommandList = struct {
             .buffer2 => 2,
         };
 
-        const address = try self.device.allocateConstant(data);
+        const address = self.device.allocateConstant(data) catch {
+            log.err("Failed to allocate constant buffer for graphics root constants ({s})", .{self.name});
+            return;
+        };
         self.command_list.igraphicscommandlist.SetGraphicsRootConstantBufferView(
             buffer_slot,
             address,
@@ -1298,7 +1304,7 @@ const CommandList = struct {
     }
 
     // render pass
-    fn beginRenderPass(self: *CommandList, desc: gpu.RenderPass.Desc) Error!void {
+    fn beginRenderPass(self: *CommandList, desc: gpu.RenderPass.Desc) void {
         self.flushBarriers();
         var rt_descs: [8]d3d12.RENDER_PASS_RENDER_TARGET_DESC = undefined;
         var ds_desc: d3d12.RENDER_PASS_DEPTH_STENCIL_DESC = undefined;
@@ -1320,7 +1326,7 @@ const CommandList = struct {
             std.debug.assert(height == texture.desc.height);
 
             rt_descs[i] = .{
-                .cpuDescriptor = try texture.getRTV(
+                .cpuDescriptor = texture.getRTV(
                     attachment.texture.mip_level,
                     attachment.texture.depth_or_array_layer,
                 ),
@@ -1357,7 +1363,7 @@ const CommandList = struct {
             std.debug.assert(width == texture.desc.width);
             std.debug.assert(height == texture.desc.height);
 
-            ds_desc.cpuDescriptor = try texture.getDSV(
+            ds_desc.cpuDescriptor = texture.getDSV(
                 ds_attachment.texture.mip_level,
                 ds_attachment.texture.depth_or_array_layer,
             );
@@ -1488,10 +1494,10 @@ const CommandList = struct {
         self.setBlendConstants(@splat(1.0));
     }
 
-    fn endRenderPass(self: *CommandList) Error!void {
+    fn endRenderPass(self: *CommandList) void {
         if (!self.is_in_render_pass) {
             log.err("Cannot end render pass when not in a render pass ({s})", .{self.name});
-            return error.Gpu;
+            return;
         }
 
         // self.command_list.igraphicscommandlist4.EndRenderPass();
@@ -2768,7 +2774,7 @@ const Texture = struct {
 
         self.rtvs = InlineStorage(DescriptorHeap.Handle, 1).initFixed(&.{.invalid}) catch unreachable;
         self.dsvs = InlineStorage(DescriptorHeap.Handle, 1).initFixed(&.{}) catch unreachable;
-        _ = self.getRTV(0, 0) catch {};
+        _ = self.getRTV(0, 0);
     }
 
     fn deinit(self: *Texture) void {
@@ -2808,12 +2814,15 @@ const Texture = struct {
         return @ptrCast(@alignCast(texture));
     }
 
-    fn getRTV(self: *Texture, mip_slice: u32, array_slice: u32) !d3d12.CPU_DESCRIPTOR_HANDLE {
+    fn getRTV(self: *Texture, mip_slice: u32, array_slice: u32) d3d12.CPU_DESCRIPTOR_HANDLE {
         const index = mip_slice * self.desc.depth_or_array_layers + array_slice;
         const rtv_slice = self.rtvs.slice();
         const rtv = rtv_slice[index];
         if (rtv.isInvalid()) {
-            rtv_slice[index] = try self.device.allocateRTV();
+            rtv_slice[index] = self.device.allocateRTV() catch {
+                log.err("Failed to allocate RTV descriptor (full)", .{});
+                return .{ .ptr = 0 };
+            };
 
             var rtv_desc: d3d12.RENDER_TARGET_VIEW_DESC = std.mem.zeroes(d3d12.RENDER_TARGET_VIEW_DESC);
             rtv_desc.Format = conv.dxgiFormat(self.desc.format, .{});
@@ -2844,12 +2853,15 @@ const Texture = struct {
         return rtv_slice[index].cpu_handle;
     }
 
-    fn getDSV(self: *Texture, mip_slice: u32, array_slice: u32) !d3d12.CPU_DESCRIPTOR_HANDLE {
+    fn getDSV(self: *Texture, mip_slice: u32, array_slice: u32) d3d12.CPU_DESCRIPTOR_HANDLE {
         const index = mip_slice * self.desc.depth_or_array_layers + array_slice;
         const dsv_slice = self.dsvs.slice();
         const dsv = dsv_slice[index];
         if (dsv.isInvalid()) {
-            dsv_slice[index] = try self.device.allocateDSV();
+            dsv_slice[index] = self.device.allocateDSV() catch {
+                log.err("Failed to allocate DSV descriptor (full)", .{});
+                return .{ .ptr = 0 };
+            };
 
             var dsv_desc: d3d12.DEPTH_STENCIL_VIEW_DESC = std.mem.zeroes(d3d12.DEPTH_STENCIL_VIEW_DESC);
             dsv_desc.Format = conv.dxgiFormat(self.desc.format, .{});
@@ -3051,10 +3063,10 @@ const impl = struct {
         cmd_list: *gpu.CommandList,
         fence: *gpu.Fence,
         fence_value: u64,
-    ) Error!void {
+    ) void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
         const f: *Fence = .fromGpuFence(fence);
-        try cl.wait(f, fence_value);
+        cl.wait(f, fence_value);
     }
 
     fn commandSignalFence(
@@ -3062,20 +3074,20 @@ const impl = struct {
         cmd_list: *gpu.CommandList,
         fence: *gpu.Fence,
         fence_value: u64,
-    ) Error!void {
+    ) void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
         const f: *Fence = .fromGpuFence(fence);
-        try cl.signal(f, fence_value);
+        cl.signal(f, fence_value);
     }
 
     fn commandPresentSwapchain(
         _: *anyopaque,
         cmd_list: *gpu.CommandList,
         swapchain: *gpu.Swapchain,
-    ) Error!void {
+    ) void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
         const sc: *Swapchain = .fromGpuSwapchain(swapchain);
-        try cl.present(sc);
+        cl.present(sc);
     }
 
     fn submitCommandList(
@@ -3152,9 +3164,9 @@ const impl = struct {
         cmd_list: *gpu.CommandList,
         slot: gpu.ConstantSlot,
         data: []const u8,
-    ) Error!void {
+    ) void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
-        try cl.setGraphicsConstants(slot, data);
+        cl.setGraphicsConstants(slot, data);
     }
 
     fn commandSetComputeConstants(
@@ -3162,26 +3174,26 @@ const impl = struct {
         cmd_list: *gpu.CommandList,
         slot: gpu.ConstantSlot,
         data: []const u8,
-    ) Error!void {
+    ) void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
-        try cl.setComputeConstants(slot, data);
+        cl.setComputeConstants(slot, data);
     }
 
     fn commandBeginRenderPass(
         _: *anyopaque,
         cmd_list: *gpu.CommandList,
         desc: *const gpu.RenderPass.Desc,
-    ) Error!void {
+    ) void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
-        try cl.beginRenderPass(desc.*);
+        cl.beginRenderPass(desc.*);
     }
 
     fn commandEndRenderPass(
         _: *anyopaque,
         cmd_list: *gpu.CommandList,
-    ) Error!void {
+    ) void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
-        try cl.endRenderPass();
+        cl.endRenderPass();
     }
 
     fn commandSetViewports(
