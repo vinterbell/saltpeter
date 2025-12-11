@@ -70,7 +70,7 @@ pub const Device = struct {
             if (d3d12.GetDebugInterface(win32.riid(d3d12d.IDebug1), @ptrCast(&debug_controller)) == win32.S_OK) {
                 debug_controller.?.EnableDebugLayer();
                 // if (options.validation == .full) {
-                debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
+                // debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
                 // }
                 factory_flags |= dxgi.CREATE_FACTORY_DEBUG;
             }
@@ -756,18 +756,20 @@ const Buffer = struct {
             .desc = desc,
         };
 
-        const resource_desc: d3d12.RESOURCE_DESC = conv.bufferResourceDesc(&desc);
-        const initial_state: d3d12.RESOURCE_STATES = .{};
+        const resource_desc: d3d12.RESOURCE_DESC1 = conv.bufferResourceDesc(&desc);
+        const layout: d3d12.BARRIER_LAYOUT = if (desc.shader_write) .UNORDERED_ACCESS else .UNDEFINED;
 
         var hr: win32.HRESULT = win32.S_OK;
         var allocation_desc: d3d12ma.ALLOCATION_DESC = .{};
         allocation_desc.HeapType = conv.heapType(desc.location);
         allocation_desc.Flags = d3d12ma._ALLOCATION_FLAG_COMMITTED;
 
-        hr = device.mem_allocator.CreateResource(
+        hr = device.mem_allocator.CreateResource3(
             &allocation_desc,
             &resource_desc,
-            initial_state,
+            layout,
+            null,
+            0,
             null,
             &self.allocation,
             win32.riid(d3d12.IResource),
@@ -868,8 +870,14 @@ const CommandList = struct {
 
     current_pipeline_state: ?*d3d12.IPipelineState = null,
 
-    barriers: [max_barriers_store]d3d12.RESOURCE_BARRIER = undefined,
-    barriers_count: usize = 0,
+    texture_barriers: [max_barriers_store]d3d12.TEXTURE_BARRIER = undefined,
+    texture_barriers_count: usize = 0,
+
+    buffer_barriers: [max_barriers_store]d3d12.BUFFER_BARRIER = undefined,
+    buffer_barriers_count: usize = 0,
+
+    global_barriers: [max_barriers_store]d3d12.GLOBAL_BARRIER = undefined,
+    global_barriers_count: usize = 0,
 
     pending_waits: [max_fence_operations]FenceValue = undefined,
     pending_waits_count: usize = 0,
@@ -880,6 +888,9 @@ const CommandList = struct {
     pending_swapchains: [max_present_swapchains]*Swapchain = undefined,
     pending_swapchains_count: usize = 0,
 
+    render_pass_render_targets: [8]d3d12.RENDER_PASS_RENDER_TARGET_DESC = undefined,
+    render_pass_render_target_count: usize = 0,
+    render_pass_depth_stencil: ?d3d12.RENDER_PASS_DEPTH_STENCIL_DESC = null,
     is_in_render_pass: bool = false,
     command_count: u64 = 0,
 
@@ -1073,7 +1084,9 @@ const CommandList = struct {
     }
 
     fn resetState(self: *CommandList) void {
-        self.barriers_count = 0;
+        self.texture_barriers_count = 0;
+        self.buffer_barriers_count = 0;
+        self.global_barriers_count = 0;
         self.pending_waits_count = 0;
         self.pending_signals_count = 0;
         self.pending_swapchains_count = 0;
@@ -1100,54 +1113,34 @@ const CommandList = struct {
         before: gpu.Access,
         after: gpu.Access,
     ) void {
-        if (self.barriers_count >= max_barriers_store) {
+        if (self.texture_barriers_count >= max_barriers_store) {
             log.err("Exceeded maximum texture barriers in command list ({s})", .{self.name});
             return;
         }
 
-        const barrier: d3d12.RESOURCE_BARRIER = .{
-            .Type = .TRANSITION,
-            .u = .{
-                .Transition = .{
-                    .pResource = texture.handle.?,
-                    .Subresource = subresource,
-                    .StateBefore = conv.resourceStates(before),
-                    .StateAfter = conv.resourceStates(after),
-                },
+        const barrier: d3d12.TEXTURE_BARRIER = .{
+            .SyncBefore = conv.barrierSync(before),
+            .SyncAfter = conv.barrierSync(after),
+            .AccessBefore = conv.barrierAccess(before),
+            .AccessAfter = conv.barrierAccess(after),
+            .LayoutBefore = conv.barrierLayout(before),
+            .LayoutAfter = conv.barrierLayout(after),
+            .pResource = texture.handle.?,
+            .Subresources = .{
+                .IndexOrFirstMipLevel = subresource,
+                .NumMipLevels = 0,
+                .FirstArraySlice = 0,
+                .NumArraySlices = 0,
+                .FirstPlane = 0,
+                .NumPlanes = 0,
             },
-            // Type: RESOURCE_BARRIER_TYPE,
-            // Flags: RESOURCE_BARRIER_FLAGS,
-            // u: extern union {
-            //     Transition: RESOURCE_TRANSITION_BARRIER,
-            //     Aliasing: RESOURCE_ALIASING_BARRIER,
-            //     UAV: RESOURCE_UAV_BARRIER,
-            // },
-            .Flags = .{},
+            .Flags = .{
+                .DISCARD = before.discard,
+            },
         };
 
-        // const barrier: d3d12.TEXTURE_BARRIER = .{
-        //     .SyncBefore = conv.barrierSync(before),
-        //     .SyncAfter = conv.barrierSync(after),
-        //     .AccessBefore = conv.barrierAccess(before),
-        //     .AccessAfter = conv.barrierAccess(after),
-        //     .LayoutBefore = conv.barrierLayout(before),
-        //     .LayoutAfter = conv.barrierLayout(after),
-        //     .pResource = texture.handle.?,
-        //     .Subresources = .{
-        //         .IndexOrFirstMipLevel = subresource,
-        //         .NumMipLevels = 0,
-        //         .FirstArraySlice = 0,
-        //         .NumArraySlices = 0,
-        //         .FirstPlane = 0,
-        //         .NumPlanes = 0,
-        //     },
-        //     .Flags = .{
-        //         .DISCARD = before.discard,
-        //     },
-        // };
-
-        self.barriers[self.barriers_count] = barrier;
-        self.barriers_count += 1;
+        self.texture_barriers[self.texture_barriers_count] = barrier;
+        self.texture_barriers_count += 1;
     }
 
     fn bufferBarrier(
@@ -1156,33 +1149,23 @@ const CommandList = struct {
         before: gpu.Access,
         after: gpu.Access,
     ) void {
-        if (self.barriers_count >= max_barriers_store) {
+        if (self.buffer_barriers_count >= max_barriers_store) {
             log.err("Exceeded maximum buffer barriers in command list ({s})", .{self.name});
             return;
         }
 
-        const barrier: d3d12.RESOURCE_BARRIER = .{
-            .Type = .TRANSITION,
-            .u = .{
-                .Transition = .{
-                    .pResource = buffer.handle,
-                    .Subresource = 0,
-                    .StateBefore = conv.resourceStates(before),
-                    .StateAfter = conv.resourceStates(after),
-                },
-            },
-            // Type: RESOURCE_BARRIER_TYPE,
-            // Flags: RESOURCE_BARRIER_FLAGS,
-            // u: extern union {
-            //     Transition: RESOURCE_TRANSITION_BARRIER,
-            //     Aliasing: RESOURCE_ALIASING_BARRIER,
-            //     UAV: RESOURCE_UAV_BARRIER,
-            // },
-            .Flags = .{},
+        const barrier: d3d12.BUFFER_BARRIER = .{
+            .SyncBefore = conv.barrierSync(before),
+            .SyncAfter = conv.barrierSync(after),
+            .AccessBefore = conv.barrierAccess(before),
+            .AccessAfter = conv.barrierAccess(after),
+            .pResource = buffer.handle,
+            .Offset = 0,
+            .Size = std.math.maxInt(u64),
         };
 
-        self.barriers[self.barriers_count] = barrier;
-        self.barriers_count += 1;
+        self.buffer_barriers[self.buffer_barriers_count] = barrier;
+        self.buffer_barriers_count += 1;
     }
 
     fn globalBarrier(
@@ -1190,40 +1173,67 @@ const CommandList = struct {
         before: gpu.Access,
         after: gpu.Access,
     ) void {
-        _ = self;
-        _ = before;
-        _ = after;
-        @panic("Global barriers are not supported in D3D12");
+        if (self.global_barriers_count >= max_barriers_store) {
+            log.err("Exceeded maximum global barriers in command list ({s})", .{self.name});
+            return;
+        }
+
+        const barrier: d3d12.GLOBAL_BARRIER = .{
+            .SyncBefore = conv.barrierSync(before),
+            .SyncAfter = conv.barrierSync(after),
+            .AccessBefore = conv.barrierAccess(before),
+            .AccessAfter = conv.barrierAccess(after),
+        };
+
+        self.global_barriers[self.global_barriers_count] = barrier;
+        self.global_barriers_count += 1;
     }
 
     fn flushBarriers(self: *CommandList) void {
-        var barrier_groups: [max_barriers_store * 2]d3d12.RESOURCE_BARRIER = undefined;
+        var barrier_groups: [3]d3d12.BARRIER_GROUP = undefined;
         var barrier_group_count: usize = 0;
 
-        if (self.barriers_count > 0) {
-            for (self.barriers[0..self.barriers_count]) |barrier| {
-                barrier_groups[barrier_group_count] = barrier;
-                barrier_group_count += 1;
-            }
+        if (self.texture_barriers_count > 0) {
+            barrier_groups[barrier_group_count] = .{
+                .Type = .TEXTURE,
+                .NumBarriers = @intCast(self.texture_barriers_count),
+                .u = .{
+                    .pTextureBarriers = &self.texture_barriers,
+                },
+            };
+            barrier_group_count += 1;
         }
 
-        // if (self.global_barriers_count > 0) {
-        //     barrier_groups[barrier_group_count] = .{
-        //         .Type = .GLOBAL,
-        //         .NumBarriers = @intCast(self.global_barriers_count),
-        //         .u = .{
-        //             .pGlobalBarriers = &self.global_barriers,
-        //         },
-        //     };
-        //     barrier_group_count += 1;
-        // }
+        if (self.buffer_barriers_count > 0) {
+            barrier_groups[barrier_group_count] = .{
+                .Type = .BUFFER,
+                .NumBarriers = @intCast(self.buffer_barriers_count),
+                .u = .{
+                    .pBufferBarriers = &self.buffer_barriers,
+                },
+            };
+            barrier_group_count += 1;
+        }
+
+        if (self.global_barriers_count > 0) {
+            barrier_groups[barrier_group_count] = .{
+                .Type = .GLOBAL,
+                .NumBarriers = @intCast(self.global_barriers_count),
+                .u = .{
+                    .pGlobalBarriers = &self.global_barriers,
+                },
+            };
+            barrier_group_count += 1;
+        }
 
         if (barrier_group_count > 0) {
-            self.command_list.igraphicscommandlist.ResourceBarrier(
+            self.command_list.Barrier(
                 @intCast(barrier_group_count),
                 &barrier_groups,
             );
-            self.barriers_count = 0;
+            self.texture_barriers_count = 0;
+            self.buffer_barriers_count = 0;
+            self.global_barriers_count = 0;
         }
     }
 
@@ -1404,12 +1414,58 @@ const CommandList = struct {
             }
         }
 
-        self.command_list.igraphicscommandlist4.BeginRenderPass(
+        var rt_descriptors: [8]d3d12.CPU_DESCRIPTOR_HANDLE = undefined;
+        for (rt_descs[0..rt_count], self.render_pass_render_targets[0..rt_count], rt_descriptors[0..rt_count]) |rt_desc, *desc_rt, *descriptor| {
+            std.debug.assert(rt_desc.cpuDescriptor.ptr != 0);
+            if (rt_desc.BeginningAccess.Type == .CLEAR) {
+                self.command_list.igraphicscommandlist.ClearRenderTargetView(
+                    rt_desc.cpuDescriptor,
+                    &rt_desc.BeginningAccess.u.Clear.ClearValue.u.Color,
+                    0,
+                    null,
+                );
+            }
+            desc_rt.* = rt_desc;
+            descriptor.* = rt_desc.cpuDescriptor;
+        }
+        self.render_pass_render_target_count = rt_count;
+
+        if (desc.depth_stencil_attachment) |_| {
+            std.debug.assert(ds_desc.cpuDescriptor.ptr != 0);
+            var flags: d3d12.CLEAR_FLAGS = .{};
+            if (ds_desc.DepthBeginningAccess.Type == .CLEAR) {
+                flags.DEPTH = true;
+            }
+            if (ds_desc.StencilBeginningAccess.Type == .CLEAR) {
+                flags.STENCIL = true;
+            }
+
+            if (flags.DEPTH or flags.STENCIL) {
+                self.command_list.igraphicscommandlist.ClearDepthStencilView(
+                    ds_desc.cpuDescriptor,
+                    flags,
+                    ds_desc.DepthBeginningAccess.u.Clear.ClearValue.u.DepthStencil.Depth,
+                    ds_desc.StencilBeginningAccess.u.Clear.ClearValue.u.DepthStencil.Stencil,
+                    0,
+                    null,
+                );
+            }
+            self.render_pass_depth_stencil = ds_desc;
+        }
+
+        self.command_list.igraphicscommandlist.OMSetRenderTargets(
             @intCast(rt_count),
-            &rt_descs,
-            if (desc.depth_stencil_attachment) |_| &ds_desc else null,
-            .{},
+            &rt_descriptors,
+            .FALSE,
+            if (desc.depth_stencil_attachment) |_| &self.render_pass_depth_stencil.?.cpuDescriptor else null,
         );
+
+        // self.command_list.igraphicscommandlist4.BeginRenderPass(
+        //     @intCast(rt_count),
+        //     &rt_descs,
+        //     if (desc.depth_stencil_attachment) |_| &ds_desc else null,
+        //     .{},
+        // );
         self.is_in_render_pass = true;
 
         self.command_count += 1;
@@ -1428,6 +1484,8 @@ const CommandList = struct {
                 .height = height,
             },
         });
+        self.setStencilReference(0);
+        self.setBlendConstants(@splat(1.0));
     }
 
     fn endRenderPass(self: *CommandList) Error!void {
@@ -1436,7 +1494,9 @@ const CommandList = struct {
             return error.Gpu;
         }
 
-        self.command_list.igraphicscommandlist4.EndRenderPass();
+        // self.command_list.igraphicscommandlist4.EndRenderPass();
+        self.command_list.igraphicscommandlist.OMSetRenderTargets(0, null, .FALSE, null);
+
         self.is_in_render_pass = false;
 
         self.command_count += 1;
@@ -2629,14 +2689,14 @@ const Texture = struct {
             .desc = desc,
         };
 
-        const resource_desc: d3d12.RESOURCE_DESC = conv.textureResourceDesc(&desc);
-        var initial_state: d3d12.RESOURCE_STATES = .{};
+        const resource_desc: d3d12.RESOURCE_DESC1 = conv.textureResourceDesc(&desc);
+        var layout: d3d12.BARRIER_LAYOUT = .COMMON;
         if (desc.usage.render_target) {
-            initial_state.RENDER_TARGET = true;
+            layout = .RENDER_TARGET;
         } else if (desc.usage.depth_stencil) {
-            initial_state.DEPTH_WRITE = true;
+            layout = .DEPTH_STENCIL_WRITE;
         } else if (desc.usage.shader_write) {
-            initial_state.UNORDERED_ACCESS = true;
+            layout = .UNORDERED_ACCESS;
         }
 
         const optimized_clear_value: d3d12.CLEAR_VALUE = if (desc.usage.depth_stencil)
@@ -2656,11 +2716,13 @@ const Texture = struct {
         allocation_desc.HeapType = conv.heapType(desc.location);
         allocation_desc.Flags = d3d12ma._ALLOCATION_FLAG_COMMITTED;
 
-        hr = device.mem_allocator.CreateResource(
+        hr = device.mem_allocator.CreateResource3(
             &allocation_desc,
             &resource_desc,
-            initial_state,
+            layout,
             optimized_clear_value_ptr,
+            0,
+            null,
             &self.allocation,
             win32.riid(d3d12.IResource),
             @ptrCast(&self.handle),
@@ -3693,8 +3755,8 @@ const conv = struct {
         };
     }
 
-    fn bufferResourceDesc(desc: *const gpu.Buffer.Desc) d3d12.RESOURCE_DESC {
-        var res: d3d12.RESOURCE_DESC = std.mem.zeroes(d3d12.RESOURCE_DESC);
+    fn bufferResourceDesc(desc: *const gpu.Buffer.Desc) d3d12.RESOURCE_DESC1 {
+        var res: d3d12.RESOURCE_DESC1 = std.mem.zeroes(d3d12.RESOURCE_DESC1);
         res.Dimension = .BUFFER;
         res.Width = @intCast(desc.size);
         res.Height = 1;
@@ -3711,8 +3773,8 @@ const conv = struct {
         return res;
     }
 
-    fn textureResourceDesc(desc: *const gpu.Texture.Desc) d3d12.RESOURCE_DESC {
-        var res: d3d12.RESOURCE_DESC = std.mem.zeroes(d3d12.RESOURCE_DESC);
+    fn textureResourceDesc(desc: *const gpu.Texture.Desc) d3d12.RESOURCE_DESC1 {
+        var res: d3d12.RESOURCE_DESC1 = std.mem.zeroes(d3d12.RESOURCE_DESC1);
         res.Width = desc.width;
         res.Height = desc.height;
         res.MipLevels = @intCast(desc.mip_levels);
@@ -3766,44 +3828,62 @@ const conv = struct {
             .copy => .COPY,
         };
     }
+    fn barrierSync(access: gpu.Access) d3d12.BARRIER_SYNC {
+        var sync: d3d12.BARRIER_SYNC = .{};
+        const discard = access.discard;
+        if (!discard) {
+            if (access.clear_write) sync.CLEAR_UNORDERED_ACCESS_VIEW = true;
+        }
 
-    fn resourceStates(access: gpu.Access) d3d12.RESOURCE_STATES {
-        var states: d3d12.RESOURCE_STATES = .COMMON;
+        if (access.present) sync.ALL = true;
+        if (access.render_target) sync.RENDER_TARGET = true;
+        if (access.isDSV()) sync.DEPTH_STENCIL = true;
+        if (access.isVertex()) sync.VERTEX_SHADING = true;
+        if (access.isFragment()) sync.PIXEL_SHADING = true;
+        if (access.isCompute()) sync.COMPUTE_SHADING = true;
+        if (access.isCopy()) sync.COPY = true;
+        if (access.index_buffer) sync.INDEX_INPUT = true;
+        if (access.indirect_argument) sync.EXECUTE_INDIRECT_OR_PREDICATION = true;
+        // TODO: acceleration structure
 
-        if (access.common) {}
-        if (access.vertex_and_constant_buffer) {
-            states.VERTEX_AND_CONSTANT_BUFFER = true;
-        }
-        if (access.index_buffer) {
-            states.INDEX_BUFFER = true;
-        }
-        if (access.render_target) {
-            states.RENDER_TARGET = true;
-        }
-        if (access.shader_write) {
-            states.UNORDERED_ACCESS = true;
-        }
-        if (access.depth_stencil_write) {
-            states.DEPTH_WRITE = true;
-        }
-        if (access.depth_stencil_read) {
-            states.DEPTH_READ = true;
-        }
-        if (access.non_pixel_shader_resource) {
-            states.NON_PIXEL_SHADER_RESOURCE = true;
-        }
-        if (access.pixel_shader_resource) {
-            states.PIXEL_SHADER_RESOURCE = true;
-        }
-        if (access.copy_dest) {
-            states.COPY_DEST = true;
-        }
-        if (access.copy_source) {
-            states.COPY_SOURCE = true;
-        }
-        if (access.present) {}
+        return sync;
+    }
 
-        return states;
+    fn barrierAccess(access: gpu.Access) d3d12.BARRIER_ACCESS {
+        if (access.discard) return .{ .NO_ACCESS = true };
+
+        var res: d3d12.BARRIER_ACCESS = .COMMON;
+        if (access.render_target) res.RENDER_TARGET = true;
+        if (access.depth_stencil) res.DEPTH_STENCIL_WRITE = true;
+        if (access.depth_stencil_read_only) res.DEPTH_STENCIL_READ = true;
+        if (access.isRead()) res.SHADER_RESOURCE = true;
+        if (access.isWrite()) res.UNORDERED_ACCESS = true;
+        if (access.clear_write) res.UNORDERED_ACCESS = true;
+        if (access.copy_dst) res.COPY_DEST = true;
+        if (access.copy_src) res.COPY_SOURCE = true;
+        // if (access.shading_rate) res.SHADING_RATE_SOURCE = true;
+        if (access.index_buffer) res.INDEX_BUFFER = true;
+        if (access.indirect_argument) res.INDIRECT_ARGUMENT_OR_PREDICATION = true;
+        // if (access.as_read) res.RAYTRACING_ACCELERATION_STRUCTURE_READ = true;
+        // if (access.as_write) res.RAYTRACING_ACCELERATION_STRUCTURE_WRITE = true;
+
+        return res;
+    }
+
+    fn barrierLayout(access: gpu.Access) d3d12.BARRIER_LAYOUT {
+        if (access.discard) return .UNDEFINED;
+        if (access.present) return .PRESENT;
+        if (access.render_target) return .RENDER_TARGET;
+        if (access.depth_stencil) return .DEPTH_STENCIL_WRITE;
+        if (access.depth_stencil_read_only) return .DEPTH_STENCIL_READ;
+        if (access.isRead()) return .SHADER_RESOURCE;
+        if (access.isWrite()) return .UNORDERED_ACCESS;
+        if (access.clear_write) return .UNORDERED_ACCESS;
+        if (access.copy_dst) return .COPY_DEST;
+        if (access.copy_src) return .COPY_SOURCE;
+        // if (access.shading_rate) return .SHADING_RATE_SOURCE;
+
+        @panic("unhandled gpu.Access layout, none of the known usages matched");
     }
 
     fn renderPassBeginningAccessTypeColor(load: gpu.RenderPass.LoadColor) d3d12.RENDER_PASS_BEGINNING_ACCESS_TYPE {
@@ -4289,7 +4369,7 @@ const d3d12ma = struct {
             InitialLayout: d3d12.BARRIER_LAYOUT,
             pOptimizedClearValue: ?*const d3d12.CLEAR_VALUE,
             NumCastableFormats: u32,
-            pCastableFormats: *const dxgi.FORMAT,
+            pCastableFormats: ?[*]const dxgi.FORMAT,
             ppAllocation: *?*Allocation,
             riidResource: *const win32.GUID,
             ppvResource: *?*anyopaque,
@@ -4301,7 +4381,7 @@ const d3d12ma = struct {
                 InitialLayout,
                 pOptimizedClearValue,
                 NumCastableFormats,
-                pCastableFormats,
+                @ptrCast(pCastableFormats),
                 ppAllocation,
                 riidResource,
                 ppvResource,
@@ -4355,7 +4435,7 @@ const d3d12ma = struct {
         extern fn D3D12MAAllocator_GetMemoryCapacity(pSelf: ?*anyopaque, MemorySegmentGroup: u32) u64;
         extern fn D3D12MAAllocator_CreateResource(pSelf: ?*anyopaque, pAllocDesc: [*c]const ALLOCATION_DESC, pResourceDesc: [*c]const d3d12.RESOURCE_DESC, InitialResourceState: d3d12.RESOURCE_STATES, pOptimizedClearValue: [*c]const d3d12.CLEAR_VALUE, ppAllocation: [*c]?*Allocation, riidResource: [*c]const win32.GUID, ppvResource: [*c]?*anyopaque) win32.HRESULT;
         extern fn D3D12MAAllocator_CreateResource2(pSelf: ?*anyopaque, pAllocDesc: [*c]const ALLOCATION_DESC, pResourceDesc: [*c]const d3d12.RESOURCE_DESC1, InitialResourceState: d3d12.RESOURCE_STATES, pOptimizedClearValue: [*c]const d3d12.CLEAR_VALUE, ppAllocation: [*c]?*Allocation, riidResource: [*c]const win32.GUID, ppvResource: [*c]?*anyopaque) win32.HRESULT;
-        extern fn D3D12MAAllocator_CreateResource3(pSelf: ?*anyopaque, pAllocDesc: [*c]const ALLOCATION_DESC, pResourceDesc: [*c]const d3d12.RESOURCE_DESC1, InitialLayout: d3d12.BARRIER_LAYOUT, pOptimizedClearValue: [*c]const d3d12.CLEAR_VALUE, NumCastableFormats: u32, pCastableFormats: [*c]dxgi.FORMAT, ppAllocation: [*c]?*Allocation, riidResource: [*c]const win32.GUID, ppvResource: [*c]?*anyopaque) win32.HRESULT;
+        extern fn D3D12MAAllocator_CreateResource3(pSelf: ?*anyopaque, pAllocDesc: [*c]const ALLOCATION_DESC, pResourceDesc: [*c]const d3d12.RESOURCE_DESC1, InitialLayout: d3d12.BARRIER_LAYOUT, pOptimizedClearValue: [*c]const d3d12.CLEAR_VALUE, NumCastableFormats: u32, pCastableFormats: [*c]const dxgi.FORMAT, ppAllocation: [*c]?*Allocation, riidResource: [*c]const win32.GUID, ppvResource: [*c]?*anyopaque) win32.HRESULT;
         extern fn D3D12MAAllocator_AllocateMemory(pSelf: ?*anyopaque, pAllocDesc: [*c]const ALLOCATION_DESC, pAllocInfo: [*c]const d3d12.RESOURCE_ALLOCATION_INFO, ppAllocation: [*c]?*Allocation) win32.HRESULT;
         extern fn D3D12MAAllocator_CreateAliasingResource(pSelf: ?*anyopaque, pAllocation: ?*Allocation, AllocationLocalOffset: u64, pResourceDesc: [*c]const d3d12.RESOURCE_DESC, InitialResourceState: d3d12.RESOURCE_STATES, pOptimizedClearValue: [*c]const d3d12.CLEAR_VALUE, riidResource: [*c]const win32.GUID, ppvResource: [*c]?*anyopaque) win32.HRESULT;
         extern fn D3D12MAAllocator_CreateAliasingResource1(pSelf: ?*anyopaque, pAllocation: ?*Allocation, AllocationLocalOffset: u64, pResourceDesc: [*c]const d3d12.RESOURCE_DESC1, InitialResourceState: d3d12.RESOURCE_STATES, pOptimizedClearValue: [*c]const d3d12.CLEAR_VALUE, riidResource: [*c]const win32.GUID, ppvResource: [*c]?*anyopaque) win32.HRESULT;

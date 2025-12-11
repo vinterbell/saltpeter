@@ -191,22 +191,22 @@ pub fn main() !void {
 
         const old_view: linalg.Mat = camera.view;
         const rotation_mat = linalg.mul(
-            linalg.rotationY(camera_yaw_delta),
+            linalg.rotationY(-camera_yaw_delta),
             linalg.rotationX(camera_pitch_delta),
         );
-        const rotated_view = linalg.mul(rotation_mat, old_view);
+        const rotated_view = linalg.mul(old_view, rotation_mat);
         const translated_view = linalg.mul(
-            linalg.translation(camera_move_left_right, camera_move_up_down, camera_move_back_front),
             rotated_view,
+            linalg.translation(camera_move_left_right, camera_move_up_down, camera_move_back_front),
         );
         camera.setView(translated_view);
 
-        const t = linalg.util.getTranslationVec(translated_view);
-        std.debug.print("Camera position: ({}, {}, {})\n", .{ t[0], t[1], t[2] });
+        // const t = linalg.util.getTranslationVec(translated_view);
+        // std.debug.print("Camera position: ({}, {}, {})\n", .{ t[0], t[1], t[2] });
 
-        const r = linalg.util.getRotationQuat(translated_view);
-        const euler = linalg.quatToRollPitchYaw(r);
-        std.debug.print("Camera rotation (radians): ({}, {}, {})\n", .{ euler[0], euler[1], euler[2] });
+        // const r = linalg.util.getRotationQuat(translated_view);
+        // const euler = linalg.quatToRollPitchYaw(r);
+        // std.debug.print("Camera rotation (radians): ({}, {}, {})\n", .{ euler[0], euler[1], euler[2] });
 
         rctx.gres.clearTemporaryResources();
 
