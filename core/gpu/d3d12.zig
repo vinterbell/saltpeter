@@ -49,7 +49,6 @@ pub const Device = struct {
     is_done: bool,
 
     // @init
-
     pub fn init(self: *Device, allocator: std.mem.Allocator, options: gpu.Options) !void {
         self.* = undefined;
         self.is_done = false;
@@ -757,7 +756,7 @@ const Buffer = struct {
         };
 
         const resource_desc: d3d12.RESOURCE_DESC1 = conv.bufferResourceDesc(&desc);
-        const layout: d3d12.BARRIER_LAYOUT = if (desc.shader_write) .UNORDERED_ACCESS else .UNDEFINED;
+        const layout: d3d12.BARRIER_LAYOUT = if (desc.usage.shader_write) .UNORDERED_ACCESS else .UNDEFINED;
 
         var hr: win32.HRESULT = win32.S_OK;
         var allocation_desc: d3d12ma.ALLOCATION_DESC = .{};
@@ -1986,7 +1985,7 @@ const Descriptor = struct {
 
                 const buffer_desc = buffer.desc;
 
-                std.debug.assert(buffer_desc.shader_write);
+                std.debug.assert(buffer_desc.usage.shader_write);
 
                 const computed_size = desc.resource.buffer.size.toInt() orelse
                     buffer_desc.size - desc.resource.buffer.offset;
@@ -2331,7 +2330,6 @@ const Swapchain = struct {
     height: u32 = 0,
 
     backbuffer_index: u32 = 0,
-    frame_counter: u32 = 0,
     textures: [gpu.backbuffer_count]?Texture = @splat(null),
 
     name_buffer: [256]u8 = undefined,
@@ -3778,7 +3776,7 @@ const conv = struct {
         res.SampleDesc.Count = 1;
         res.Layout = .ROW_MAJOR;
 
-        if (desc.shader_write) {
+        if (desc.usage.shader_write) {
             res.Flags.ALLOW_UNORDERED_ACCESS = true;
         }
 
@@ -4131,37 +4129,6 @@ fn releaseFully(iunknown: *win32.IUnknown) void {
         count = iunknown.Release();
         if (count == 0) break;
     }
-}
-
-/// when `nextBuffer` is called, the buffer it moves to is returned to be processed/deleted
-fn StaticRingBuffer(comptime T: type, comptime buffer_frames: usize, comptime max_items: usize) type {
-    return struct {
-        const StaticRingBufferT = @This();
-
-        buffers: [buffer_frames + 1][max_items]T = undefined,
-        buffer_lens: [buffer_frames + 1]usize = @splat(0),
-        current_buffer_index: usize = 0,
-
-        pub const empty: StaticRingBufferT = .{};
-
-        fn buffer(self: *StaticRingBufferT, index: usize) []T {
-            return self.buffers[index][0..self.buffer_lens[index]];
-        }
-
-        /// process the items returned in the slice to be deleted
-        fn nextBuffer(self: *StaticRingBufferT) []const T {
-            self.current_buffer_index = (self.current_buffer_index + 1) % (buffer_frames + 1);
-            const slice = self.buffer(self.current_buffer_index);
-            self.buffer_lens[self.current_buffer_index] = 0;
-            return slice;
-        }
-
-        fn add(self: *StaticRingBufferT, item: T) void {
-            const len = self.buffer_lens[self.current_buffer_index];
-            self.buffers[self.current_buffer_index][len] = item;
-            self.buffer_lens[self.current_buffer_index] += 1;
-        }
-    };
 }
 
 const d3d12ma = struct {
@@ -4534,3 +4501,4 @@ pub const log = std.log.scoped(.d3d12);
 const utils = @import("utils.zig");
 const InlineStorage = utils.InlineStorage;
 const OffsetAllocator = @import("OffsetAllocator.zig");
+const StaticRingBuffer = utils.StaticRingBuffer;

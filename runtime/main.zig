@@ -1,4 +1,10 @@
+extern fn system(command: [*:0]const u8) c_int;
+
 pub fn main() !void {
+    errdefer {
+        _ = system("pause");
+    }
+
     const allocator = defaultGpa();
     defer deinitGpa();
 
@@ -41,7 +47,7 @@ pub fn main() !void {
 
     const swapchain = try rctx.interface.createSwapchain(
         allocator,
-        .default(window),
+        .withPresentMode(window, .immediate),
         "swapchain",
     );
     defer rctx.interface.destroySwapchain(swapchain);
@@ -144,6 +150,9 @@ pub fn main() !void {
 
     var previous_time: std.Io.Clock.Timestamp = try .now(io, .real);
 
+    var accum: f32 = 0.0;
+    var prev_accum_frame: usize = 0;
+
     var frame_index: usize = 0;
     while (!window.should_close) {
         sp.platform.processEvents();
@@ -155,6 +164,14 @@ pub fn main() !void {
         previous_time = now;
 
         const delta_time: f32 = @as(f32, @floatFromInt(delta.raw.toNanoseconds())) / 1_000_000_000.0;
+
+        accum += delta_time;
+        if (accum >= 1.0) {
+            accum -= 1.0;
+            const frame_diff = frame_index - prev_accum_frame;
+            prev_accum_frame = frame_index;
+            std.debug.print("FPS: {d}\n", .{frame_diff});
+        }
 
         const input_up = window.back_input.keys_held.contains(.up);
         const input_down = window.back_input.keys_held.contains(.down);
@@ -199,11 +216,13 @@ pub fn main() !void {
         try rctx.ren.beginFrame();
 
         const cmd = rctx.ren.commandList();
-        renderer.useSwapchain(swapchain, .final_composite);
-        try renderer.begin(cmd, &camera);
-        try renderer.end(cmd);
+        // renderer.useSwapchain(swapchain, .final_composite);
+        // try renderer.begin(cmd, &camera);
+        // try renderer.end(cmd);
 
-        try rctx.us.doUploads();
+        _ = rctx.ren.useSwapchain(swapchain);
+
+        try rctx.us.doUploads(cmd);
         rctx.us.reset();
         try rctx.ren.endFrame();
 

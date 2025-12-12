@@ -31,7 +31,7 @@ pub const LinearAllocatedBuffer = struct {
 
         self.buffer = try interface.createBuffer(
             allocator,
-            .readonlyBuffer(buffer_size, .cpu_to_gpu),
+            .constantBuffer(buffer_size, .cpu_to_gpu),
             name,
         );
 
@@ -162,7 +162,7 @@ pub const StagingBufferAllocator = struct {
     fn newBuffer(self: *StagingBufferAllocator) !void {
         const buffer = try self.interface.createBuffer(
             self.allocator,
-            .readonlyBuffer(buffer_size, .cpu_only),
+            .constantBuffer(buffer_size, .cpu_only),
             "staging buffer",
         );
 
@@ -232,9 +232,11 @@ pub const UploadStage = struct {
     texture_dst_alignment: u32,
 
     fence: *gpu.Fence,
-    fence_value: u64,
+    current_fence_value: u64,
+    fence_values: [gpu.backbuffer_count]u64,
     command_lists: [gpu.backbuffer_count]*gpu.CommandList,
     staging_buffers: [gpu.backbuffer_count]StagingBufferAllocator,
+    needs_transition: bool,
 
     pending_texture_uploads: std.ArrayList(TextureUpload),
     pending_buffer_uploads: std.ArrayList(BufferUpload),
@@ -287,16 +289,20 @@ pub const UploadStage = struct {
 
         const texture_dst_alignment: u32 = if (interface.getInterfaceOptions().backend == .d3d12) 512 else 1;
 
+        const needs_transition = if (interface.getInterfaceOptions().backend == .vulkan) true else false;
+
         return .{
             .interface = interface,
             .allocator = allocator,
             .texture_dst_alignment = texture_dst_alignment,
             .fence = upload_fence,
-            .fence_value = 0,
+            .current_fence_value = 0,
+            .fence_values = @splat(0),
             .command_lists = upload_command_lists,
             .staging_buffers = staging_buffers,
             .pending_texture_uploads = pending_texture_uploads,
             .pending_buffer_uploads = pending_buffer_uploads,
+            .needs_transition = needs_transition,
         };
     }
 
@@ -322,10 +328,13 @@ pub const UploadStage = struct {
         self.staging_buffers[frame_index].reset();
     }
 
-    pub fn doUploads(self: *UploadStage) gpu.Error!void {
+    pub fn doUploads(self: *UploadStage, graphics_cmd: *gpu.CommandList) gpu.Error!void {
         if (self.pending_buffer_uploads.items.len == 0 and self.pending_texture_uploads.items.len == 0) {
             return;
         }
+
+        const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
+        try self.interface.waitFence(self.fence, self.fence_values[frame_index]);
 
         const cmd = self.commandList();
         self.interface.resetCommandAllocator(cmd);
@@ -349,11 +358,29 @@ pub const UploadStage = struct {
             }
         }
         try self.interface.endCommandList(cmd);
-        self.fence_value += 1;
-        self.interface.commandSignalFence(cmd, self.fence, self.fence_value);
+        self.current_fence_value += 1;
+        self.fence_values[frame_index] = self.current_fence_value;
+
+        self.interface.commandSignalFence(cmd, self.fence, self.current_fence_value);
         try self.interface.submitCommandList(cmd);
 
         // TODO: transition barriers for vulkan
+
+        if (self.needs_transition) {
+            for (self.pending_texture_uploads.items) |upload| {
+                const desc = self.interface.getTextureDesc(upload.destination.texture);
+                self.interface.commandTextureBarrier(
+                    graphics_cmd,
+                    upload.destination.texture,
+                    desc.calcSubresource(
+                        upload.destination.mip_level,
+                        upload.destination.depth_or_array_layer,
+                    ),
+                    .{ .copy_dst = true },
+                    .read,
+                );
+            }
+        }
 
         self.pending_buffer_uploads.clearRetainingCapacity();
         self.pending_texture_uploads.clearRetainingCapacity();
@@ -483,6 +510,37 @@ pub const UploadStage = struct {
         }
     }
 };
+
+/// when `nextBuffer` is called, the buffer it moves to is returned to be processed/deleted
+pub fn StaticRingBuffer(comptime T: type, comptime buffer_frames: usize, comptime max_items: usize) type {
+    return struct {
+        const StaticRingBufferT = @This();
+
+        buffers: [buffer_frames + 1][max_items]T = undefined,
+        buffer_lens: [buffer_frames + 1]usize = @splat(0),
+        current_buffer_index: usize = 0,
+
+        pub const empty: StaticRingBufferT = .{};
+
+        pub fn buffer(self: *StaticRingBufferT, index: usize) []T {
+            return self.buffers[index][0..self.buffer_lens[index]];
+        }
+
+        /// process the items returned in the slice to be deleted
+        pub fn nextBuffer(self: *StaticRingBufferT) []const T {
+            self.current_buffer_index = (self.current_buffer_index + 1) % (buffer_frames + 1);
+            const slice = self.buffer(self.current_buffer_index);
+            self.buffer_lens[self.current_buffer_index] = 0;
+            return slice;
+        }
+
+        pub fn add(self: *StaticRingBufferT, item: T) void {
+            const len = self.buffer_lens[self.current_buffer_index];
+            self.buffers[self.current_buffer_index][len] = item;
+            self.buffer_lens[self.current_buffer_index] += 1;
+        }
+    };
+}
 
 const std = @import("std");
 const gpu = @import("root.zig");

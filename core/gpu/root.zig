@@ -2,17 +2,20 @@ pub const backbuffer_count = 3;
 pub const max_root_constant_size_bytes = 32;
 pub const max_resource_descriptor_count = 65536;
 pub const max_sampler_descriptor_count = 128;
+pub const all_subresource: u32 = 0xFFFFFFFF;
 
 pub const Options = struct {
-    backend: Backend = .default,
-    power_preference: enum {
-        high_performance,
-        low_power,
-    } = .high_performance,
+    backend: Backend = .vulkan,
+    power_preference: PowerPreference = .high_performance,
     validation: bool = switch (builtin.mode) {
         .Debug => true,
         else => false,
     },
+
+    pub const PowerPreference = enum {
+        high_performance,
+        low_power,
+    };
 };
 
 pub fn init(allocator: std.mem.Allocator, options: Options) !Interface {
@@ -25,6 +28,16 @@ pub fn init(allocator: std.mem.Allocator, options: Options) !Interface {
             const device = try allocator.create(D3D12Device);
             errdefer allocator.destroy(device);
             try device.init(allocator, options);
+            return device.interface();
+        },
+        .vulkan => {
+            const VulkanDevice = @import("vulkan.zig").Device;
+            const device = try allocator.create(VulkanDevice);
+            errdefer allocator.destroy(device);
+            device.init(allocator, options) catch |e| {
+                std.log.err("Vulkan device initialization failed: {any}", .{e});
+                return error.Gpu;
+            };
             return device.interface();
         },
         else => @panic("Unsupported backend"),
@@ -52,22 +65,36 @@ pub const Buffer = opaque {
         }
     };
 
-    pub const Desc = struct {
+    pub const Usage = struct {
         shader_write: bool,
+        // if not constant buffer it implies storage buffer
+        constant_buffer: bool,
+    };
+
+    pub const Desc = struct {
+        usage: Usage,
         size: usize,
         location: MemoryLocation,
 
-        pub fn readonlyBuffer(size: usize, location: MemoryLocation) Desc {
+        pub fn readonlyStorageBuffer(size: usize, location: MemoryLocation) Desc {
             return .{
-                .shader_write = false,
+                .usage = .{ .shader_write = false, .constant_buffer = false },
                 .size = size,
                 .location = location,
             };
         }
 
-        pub fn readWriteBuffer(size: usize, location: MemoryLocation) Desc {
+        pub fn readWriteStorageBuffer(size: usize, location: MemoryLocation) Desc {
             return .{
-                .shader_write = true,
+                .usage = .{ .shader_write = true, .constant_buffer = false },
+                .size = size,
+                .location = location,
+            };
+        }
+
+        pub fn constantBuffer(size: usize, location: MemoryLocation) Desc {
+            return .{
+                .usage = .{ .shader_write = false, .constant_buffer = true },
                 .size = size,
                 .location = location,
             };
@@ -148,12 +175,35 @@ pub const Descriptor = opaque {
         constant_buffer,
 
         sampler,
+
+        pub fn isRead(self: Kind) bool {
+            return switch (self) {
+                .shader_read_texture_2d,
+                .shader_read_texture_2d_array,
+                .shader_read_texture_cube,
+                .shader_read_texture_3d,
+                .shader_read_buffer,
+                .shader_read_top_level_acceleration_structure,
+                => true,
+                else => false,
+            };
+        }
+
+        pub fn isWrite(self: Kind) bool {
+            return switch (self) {
+                .shader_write_texture_2d,
+                .shader_write_texture_2d_array,
+                .shader_write_texture_3d,
+                .shader_write_buffer,
+                => true,
+                else => false,
+            };
+        }
     };
 
     pub const Filter = enum(u32) {
         nearest,
         linear,
-        anisotropic,
     };
 
     pub const FilterExt = enum(u32) {
@@ -573,6 +623,7 @@ pub const Pipeline = opaque {
 
     pub const TargetState = struct {
         color_attachments: [8]ColorAttachmentState,
+        color_attachment_count: u32 = 0,
         depth_stencil_format: ?Format,
 
         pub fn targets(
@@ -590,6 +641,7 @@ pub const Pipeline = opaque {
             ) |attachment, *out| {
                 out.* = attachment;
             }
+            target_state.color_attachment_count = @intCast(len);
             return target_state;
         }
     };

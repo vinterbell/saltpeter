@@ -1,6 +1,16 @@
 .{
     .name = .saltpeter,
     .version = "0.0.1",
+    .dependencies = .{
+        .vulkan_zig = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig#f69af7a9248982cf7536aaf32111843f1a4fa4a9",
+            .hash = "vulkan-0.0.0-r7Ytx91DAwDKIXS2K_fFa-c_SJ5py7K1eCKwPcc33NcQ",
+        },
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.4.336.tar.gz",
+            .hash = "N-V-__8AAI-YKgKAmifzX8DTHUjTjfP7BmNncWcQYTaw9tpW",
+        },
+    },
     .minimum_zig_version = "0.16.0-dev.1484+d0ba6642b",
     .paths = .{
         "core",

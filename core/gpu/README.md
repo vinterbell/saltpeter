@@ -10,3 +10,6 @@ A thin wrapper around gpu apis like dx12 and later vulkan and metal.
 - Complete bindless resource binding model except for root constants which can be used to pass in small amounts of data (and for subsequent data access via raw buffers)
 - Please use structures that pack to have no padding so that they can be easily passed to the GPU without worrying about alignment issues (mainly dx12 issue as it doesnt have scalar layouts like in vk) https://maraneshi.github.io/HLSL-ConstantBufferLayoutVisualizer/
 - Use `core/graphics` module for higher level abstractions
+
+## Vulkan
+- vulkan/api.zig is generated using: `zig translate-c C:\VulkanSDK\1.4.304.1\Include\vulkan\vulkan_win32.h -IC:/VulkanSDK/1.4.304.1/Include/ -lc > vk.zig`

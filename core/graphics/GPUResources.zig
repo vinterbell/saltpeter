@@ -68,7 +68,6 @@ pub const MeshHandle = enum(u64) {
 pub const Sampler = enum(u32) {
     linear,
     nearest,
-    anisotropic,
 };
 
 pub const init_mesh_vertices_size = 1_000_000;
@@ -80,6 +79,7 @@ pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler)
     var self: GPUResources = self: {
         const backend: ShaderCompiler.Backend = switch (us.interface.getInterfaceOptions().backend) {
             .d3d12 => .d3d12,
+            .vulkan => .vulkan,
             else => |gpu_backend| {
                 std.debug.panic("Unsupported GPU backend for ShaderCompiler: {}\n", .{gpu_backend});
             },
@@ -113,17 +113,6 @@ pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler)
         );
         errdefer us.interface.destroyDescriptor(nearest_sampler);
 
-        const anisotropic_sampler = try us.interface.createDescriptor(
-            allocator,
-            .sampler(.{ .filters = .{
-                .min = .anisotropic,
-                .mag = .anisotropic,
-                .mip = .linear,
-            } }),
-            "Anisotropic Sampler",
-        );
-        errdefer us.interface.destroyDescriptor(anisotropic_sampler);
-
         var meshes: hm.HandleMap(Mesh) = try .init(allocator);
         errdefer meshes.deinit();
 
@@ -137,7 +126,6 @@ pub fn init(allocator: std.mem.Allocator, us: *UploadStage, sc: *ShaderCompiler)
             .samplers = .{
                 linear_sampler,
                 nearest_sampler,
-                anisotropic_sampler,
             },
             .mesh_set_allocator = allocator,
             .mesh_sets = .empty,
@@ -781,14 +769,14 @@ const MeshSet = struct {
 
         const vertex_buffer = try us.interface.createBuffer(
             allocator,
-            .readonlyBuffer(max_vertex_buffer_size_per_mesh, .gpu_only),
+            .readonlyStorageBuffer(max_vertex_buffer_size_per_mesh, .gpu_only),
             "MeshSet Vertex Buffer",
         );
         errdefer us.interface.destroyBuffer(vertex_buffer);
 
         const index_buffer = try us.interface.createBuffer(
             allocator,
-            .readonlyBuffer(max_index_buffer_size_per_mesh, .gpu_only),
+            .readonlyStorageBuffer(max_index_buffer_size_per_mesh, .gpu_only),
             "MeshSet Index Buffer",
         );
         errdefer us.interface.destroyBuffer(index_buffer);

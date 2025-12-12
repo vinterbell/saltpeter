@@ -38,6 +38,17 @@ pub fn build(b: *std.Build) void {
     });
     core_module.addIncludePath(b.path("core/vendor/cgltf/"));
 
+    const vulkan_headers = b.dependency("vulkan_headers", .{});
+    const vulkan = b.dependency("vulkan_zig", .{
+        .registry = vulkan_headers.path("registry/vk.xml"),
+    }).module("vulkan-zig");
+    core_module.addImport("vulkan", vulkan);
+    core_module.addIncludePath(vulkan_headers.path("include"));
+    core_module.addCSourceFile(.{
+        .file = b.path("core/gpu/vulkan/build.cpp"),
+        .flags = &.{},
+    });
+
     if (target.result.os.tag == .windows) {
         core_module.addCSourceFile(.{
             .file = b.path("core/gpu/d3d12/build.cpp"),

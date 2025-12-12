@@ -40,13 +40,16 @@ float4 FSMain(FSInput input) : SV_TARGET
     SamplerState s = SamplerDescriptorHeap[sampler_index];
 #ifdef BLIT_FROM_2D_TEXTURE
     Texture2D tex = ResourceDescriptorHeap[texture_index];
-    return tex.Sample(s, input.uv, mip_level);
+    // return tex.Sample(s, input.uv, mip_level);
+    return tex.Sample(s, input.uv);
 #elif defined(BLIT_FROM_2D_TEXTURE_ARRAY)
     Texture2DArray tex = ResourceDescriptorHeap[texture_index];
-    return tex.SampleLevel(s, float3(input.uv, (uint)array_layer_or_depth), mip_level);
+    // return tex.SampleLevel(s, float3(input.uv, (uint)array_layer_or_depth), mip_level);
+    return tex.Sample(s, float3(input.uv, (uint)array_layer_or_depth));
 #elif defined(BLIT_FROM_3D_TEXTURE)
     Texture3D tex = ResourceDescriptorHeap[texture_index];
-    return tex.SampleLevel(s, float3(input.uv, array_layer_or_depth), mip_level);
+    // return tex.SampleLevel(s, float3(input.uv, array_layer_or_depth), mip_level);
+    return tex.Sample(s, float3(input.uv, array_layer_or_depth));
 #elif defined(BLIT_FROM_CUBE_TEXTURE)
     TextureCube tex = ResourceDescriptorHeap[texture_index];
     float2 uv_mapped = input.uv * 2.0f - 1.0f;
@@ -67,7 +70,8 @@ float4 FSMain(FSInput input) : SV_TARGET
         default:
             return float4(1.0f, 0.0f, 1.0f, 1.0f); // magenta for invalid layer
     }
-    return tex.SampleLevel(s, coord, mip_level);
+    // return tex.SampleLevel(s, coord, mip_level);
+    return tex.Sample(s, coord);
 #elif defined(BLIT_FROM_CUBE_TEXTURE_ARRAY)
     TextureCubeArray tex = ResourceDescriptorHeap[texture_index];
     float2 uv_mapped = input.uv * 2.0f - 1.0f;
@@ -90,7 +94,8 @@ float4 FSMain(FSInput input) : SV_TARGET
         default:
             return float4(1.0f, 0.0f, 1.0f, 1.0f); // magenta for invalid layer
     }
-    return tex.SampleLevel(s, float4(coord, array_index), mip_level);
+    // return tex.SampleLevel(s, float4(coord, array_index), mip_level);
+    return tex.Sample(s, float4(coord, array_index));
 #else
     return float4(1.0f, 0.0f, 1.0f, 1.0f); // magenta for unimplemented
 #endif
