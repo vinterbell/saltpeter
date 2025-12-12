@@ -167,7 +167,7 @@ pub fn main() !void {
 
         accum += delta_time;
         if (accum >= 1.0) {
-            accum -= 1.0;
+            accum = 0.0;
             const frame_diff = frame_index - prev_accum_frame;
             prev_accum_frame = frame_index;
             std.debug.print("FPS: {d}\n", .{frame_diff});
@@ -216,11 +216,11 @@ pub fn main() !void {
         try rctx.ren.beginFrame();
 
         const cmd = rctx.ren.commandList();
-        // renderer.useSwapchain(swapchain, .final_composite);
+        renderer.useSwapchain(swapchain, .final_composite);
         // try renderer.begin(cmd, &camera);
         // try renderer.end(cmd);
 
-        _ = rctx.ren.useSwapchain(swapchain);
+        // _ = rctx.ren.useSwapchain(swapchain);
 
         try rctx.us.doUploads(cmd);
         rctx.us.reset();

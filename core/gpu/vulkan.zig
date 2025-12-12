@@ -240,7 +240,8 @@ pub const Device = struct {
 
     fn endFrame(self: *Device) void {
         self.frame_idx += 1;
-        self.vma.setCurrentFrameIndex(@intCast(self.frame_idx));
+        // SLOW ITS AN ATOMIC DO NOT CALL THIS
+        // self.vma.setCurrentFrameIndex(@intCast(self.frame_idx));
 
         return;
     }
@@ -3399,7 +3400,7 @@ const Swapchain = struct {
         //     .p_view_formats = &view_formats,
         // };
 
-        const create_info: vk.SwapchainCreateInfoKHR = .{
+        var create_info: vk.SwapchainCreateInfoKHR = .{
             .surface = surface,
             .min_image_count = gpu.backbuffer_count,
             .image_format = format_down,
@@ -3420,6 +3421,7 @@ const Swapchain = struct {
             .clipped = .true,
             .old_swapchain = old_swapchain,
         };
+        create_info.present_mode = .immediate_khr;
 
         const result = try device.createSwapchainKHR(&create_info, null);
 
@@ -3447,13 +3449,13 @@ const Swapchain = struct {
         out_textures: *[gpu.backbuffer_count]Texture,
     ) !void {
         var image_count: u32 = 0;
-        const resul_query_count = try device.device.getSwapchainImagesKHR(
+        const result_query_count = try device.device.getSwapchainImagesKHR(
             swapchain,
             &image_count,
             null,
         );
-        if (resul_query_count != .success) {
-            log.err("Failed to query swapchain image count: {}", .{resul_query_count});
+        if (result_query_count != .success) {
+            log.err("Failed to query swapchain image count: {}", .{result_query_count});
             return error.Gpu;
         }
         std.debug.print("Swapchain has {} images\n", .{image_count});

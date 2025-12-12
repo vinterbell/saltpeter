@@ -233,7 +233,7 @@ pub const UploadStage = struct {
 
     fence: *gpu.Fence,
     current_fence_value: u64,
-    fence_values: [gpu.backbuffer_count]u64,
+    upload_fence_token_value: ?u64,
     command_lists: [gpu.backbuffer_count]*gpu.CommandList,
     staging_buffers: [gpu.backbuffer_count]StagingBufferAllocator,
     needs_transition: bool,
@@ -297,7 +297,7 @@ pub const UploadStage = struct {
             .texture_dst_alignment = texture_dst_alignment,
             .fence = upload_fence,
             .current_fence_value = 0,
-            .fence_values = @splat(0),
+            .upload_fence_token_value = null,
             .command_lists = upload_command_lists,
             .staging_buffers = staging_buffers,
             .pending_texture_uploads = pending_texture_uploads,
@@ -329,12 +329,18 @@ pub const UploadStage = struct {
     }
 
     pub fn doUploads(self: *UploadStage, graphics_cmd: *gpu.CommandList) gpu.Error!void {
+        // const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
+        if (self.upload_fence_token_value) |token_value| {
+            try self.interface.waitFence(self.fence, token_value);
+            self.upload_fence_token_value = null;
+        }
+
         if (self.pending_buffer_uploads.items.len == 0 and self.pending_texture_uploads.items.len == 0) {
             return;
         }
 
-        const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
-        try self.interface.waitFence(self.fence, self.fence_values[frame_index]);
+        // const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
+        // try self.interface.waitFence(self.fence, self.fence_values[frame_index]);
 
         const cmd = self.commandList();
         self.interface.resetCommandAllocator(cmd);
@@ -359,9 +365,8 @@ pub const UploadStage = struct {
         }
         try self.interface.endCommandList(cmd);
         self.current_fence_value += 1;
-        self.fence_values[frame_index] = self.current_fence_value;
-
         self.interface.commandSignalFence(cmd, self.fence, self.current_fence_value);
+        self.upload_fence_token_value = self.current_fence_value;
         try self.interface.submitCommandList(cmd);
 
         // TODO: transition barriers for vulkan

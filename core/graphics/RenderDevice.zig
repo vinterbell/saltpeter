@@ -9,7 +9,6 @@ swapchain_count: usize,
 // frame stuff
 frame_fence: *gpu.Fence,
 current_frame_fence_value: u64,
-frame_fence_values: [gpu.backbuffer_count]u64,
 command_lists: [gpu.backbuffer_count]*gpu.CommandList,
 
 // compute stuff
@@ -86,7 +85,6 @@ pub fn init(allocator: std.mem.Allocator, options: gpu.Options) Error!RenderDevi
         // frame
         .frame_fence = frame_fence,
         .current_frame_fence_value = 0,
-        .frame_fence_values = @splat(0),
         .command_lists = command_lists,
         // compute
         .compute_fence = compute_fence,
@@ -130,7 +128,10 @@ pub fn computeCommandList(self: *RenderDevice) *gpu.CommandList {
 pub fn beginFrame(self: *RenderDevice) Error!void {
     const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
     {
-        try self.interface.waitFence(self.frame_fence, self.frame_fence_values[frame_index]);
+        try self.interface.waitFence(self.frame_fence, if (self.current_frame_fence_value >= gpu.backbuffer_count)
+            1 + self.current_frame_fence_value - gpu.backbuffer_count
+        else
+            0);
         self.constant_allocators[frame_index].reset();
     }
     self.interface.beginFrame();
@@ -139,22 +140,20 @@ pub fn beginFrame(self: *RenderDevice) Error!void {
     self.interface.resetCommandAllocator(cmd);
     try self.interface.beginCommandList(cmd);
 
-    const compute_cmd = self.computeCommandList();
-    self.interface.resetCommandAllocator(compute_cmd);
-    try self.interface.beginCommandList(compute_cmd);
+    // const compute_cmd = self.computeCommandList();
+    // self.interface.resetCommandAllocator(compute_cmd);
+    // try self.interface.beginCommandList(compute_cmd);
 }
 
 pub fn endFrame(self: *RenderDevice) Error!void {
-    const compute_cmd = self.computeCommandList();
-    try self.interface.endCommandList(compute_cmd);
-    self.compute_fence_value += 1;
+    // const compute_cmd = self.computeCommandList();
+    // try self.interface.endCommandList(compute_cmd);
+    // self.compute_fence_value += 1;
 
     const cmd = self.commandList();
     try self.interface.endCommandList(cmd);
 
     self.current_frame_fence_value += 1;
-    const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
-    self.frame_fence_values[frame_index] = self.current_frame_fence_value;
 
     for (self.swapchains[0..self.swapchain_count]) |swapchain| {
         self.interface.commandPresentSwapchain(cmd, swapchain);
