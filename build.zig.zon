@@ -10,6 +10,11 @@
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.4.336.tar.gz",
             .hash = "N-V-__8AAI-YKgKAmifzX8DTHUjTjfP7BmNncWcQYTaw9tpW",
         },
+        .@"dxc-windows-x86_64" = .{
+            .url = "https://github.com/vinterbell/dxc-build/releases/download/v1.8.2505/dxc-1.8.2505-windows-x86_64.tar.gz",
+            .hash = "dxc-1.8.2505-siU2n94k5xVr0wP0sC1KIZC5Z4z1y8MPvWjyur-rO_0-",
+            .lazy = true,
+        },
     },
     .minimum_zig_version = "0.16.0-dev.1484+d0ba6642b",
     .paths = .{

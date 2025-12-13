@@ -1,8 +1,13 @@
 pub fn BufferPtr(comptime T: type) type {
     return extern struct {
+        const BufferPtrT = @This();
         const _ = T;
         buffer: gpu.Descriptor.Index,
         offset: u32,
+
+        pub fn addr(address: gpu.Buffer.GpuAddress) BufferPtrT {
+            return @bitCast(@as(usize, @intFromEnum(address)));
+        }
     };
 }
 

@@ -5,7 +5,7 @@ pub const max_sampler_descriptor_count = 128;
 pub const all_subresource: u32 = 0xFFFFFFFF;
 
 pub const Options = struct {
-    backend: Backend = .vulkan,
+    backend: Backend = .default,
     power_preference: PowerPreference = .high_performance,
     validation: bool = switch (builtin.mode) {
         .Debug => true,
@@ -579,11 +579,11 @@ pub const Pipeline = opaque {
         };
 
         pub fn withDepth(
-            depth_test: DepthTest,
+            depth_test: CompareOp,
             depth_write: enum { write_depth, no_write_depth },
         ) DepthStencilState {
             return .{
-                .depth_test = depth_test,
+                .depth_test = .depthTest(depth_test),
                 .stencil_test = null,
                 .depth_write = depth_write == .write_depth,
             };

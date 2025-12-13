@@ -21,4 +21,4 @@ struct RootConstants
     BufferPtr<SceneData> scene_data_ptr;
 };
 
-ConstantBuffer<RootConstants> root : register(b0);
+ROOT_CONSTANTS(RootConstants, root);

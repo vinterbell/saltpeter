@@ -186,7 +186,7 @@ pub fn compile(self: *ShaderCompiler, allocator: std.mem.Allocator, desc: Desc) 
         });
     }
 
-    if (desc.optimization_level == .debug and desc.target_backend == .d3d12) {
+    if (desc.optimization_level == .debug) {
         try args.appendSlice(temp, &.{
             win32.L("-Zi"),
             win32.L("-Qembed_debug"),

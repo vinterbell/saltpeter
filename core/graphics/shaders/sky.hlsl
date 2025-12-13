@@ -39,11 +39,25 @@ FSInput VSMain(uint vertex_id : SV_VertexID)
     SceneData scene_data = root.scene_data_ptr.Load(0);
 
     float4x4 rotation = scene_data.view_matrix;
+    // float4x4 rotation = float4x4(
+    //     float4(1.0, 0.0, 0.0, 0.0),
+    //     float4(0.0, 1.0, 0.0, 0.0),
+    //     float4(0.0, 0.0, 1.0, 0.0),
+    //     float4(0.0, 0.0, 0.0, 1.0)
+    // );
     rotation[3] = float4(0.0, 0.0, 0.0, 1.0); // remove translation
+
+    const float4x4 temp_projection_matrix = float4x4(
+        float4(1.5829, 0.0, 0.0, 0.0),
+        float4(0.0, 2.11053, 0.0, 0.0),
+        float4(0.0, 0.0, 1.0001, 1.0),
+        float4(0.0, 0.0, -0.10001, 0.0)
+    );
 
     float4 world_position = float4(vertex_position, 1.0);
     output.sv_position = mul(world_position, rotation);
     output.sv_position = mul(output.sv_position, scene_data.projection_matrix);
+    // output.sv_position = mul(output.sv_position, temp_projection_matrix);
 
     return output;
 }

@@ -328,19 +328,19 @@ pub const UploadStage = struct {
         self.staging_buffers[frame_index].reset();
     }
 
-    pub fn doUploads(self: *UploadStage, graphics_cmd: *gpu.CommandList) gpu.Error!void {
-        // const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
+    pub fn waitForUploads(self: *UploadStage) gpu.Error!void {
         if (self.upload_fence_token_value) |token_value| {
             try self.interface.waitFence(self.fence, token_value);
             self.upload_fence_token_value = null;
         }
+    }
 
+    pub fn doUploads(self: *UploadStage, graphics_cmd: *gpu.CommandList) gpu.Error!void {
         if (self.pending_buffer_uploads.items.len == 0 and self.pending_texture_uploads.items.len == 0) {
             return;
         }
 
-        // const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
-        // try self.interface.waitFence(self.fence, self.fence_values[frame_index]);
+        try self.waitForUploads();
 
         const cmd = self.commandList();
         self.interface.resetCommandAllocator(cmd);

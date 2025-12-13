@@ -61,6 +61,16 @@ pub fn build(b: *std.Build) void {
                 "-Wno-switch",
             },
         });
+
+        const @"dxc-windows-x86_64_dep" = b.lazyDependency("dxc-windows-x86_64", .{}) orelse return;
+        const bin_path = @"dxc-windows-x86_64_dep".path("bin");
+        const dxcompiler_path = bin_path.path(b, "dxcompiler.dll");
+        const dxil_lib_path = bin_path.path(b, "dxil.dll");
+        const install_dxcompiler = b.addInstallBinFile(dxcompiler_path, "dxcompiler.dll");
+        const install_dxil = b.addInstallBinFile(dxil_lib_path, "dxil.dll");
+
+        b.getInstallStep().dependOn(&install_dxcompiler.step);
+        b.getInstallStep().dependOn(&install_dxil.step);
     }
 
     const runtime_module = b.addModule("runtime", .{

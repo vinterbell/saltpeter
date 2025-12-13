@@ -2,6 +2,7 @@ const RenderDevice = @This();
 
 allocator: std.mem.Allocator,
 interface: gpu.Interface,
+backend: gpu.Backend,
 
 swapchains: [max_blit_swapchains]*gpu.Swapchain,
 swapchain_count: usize,
@@ -77,9 +78,12 @@ pub fn init(allocator: std.mem.Allocator, options: gpu.Options) Error!RenderDevi
         constant_allocators_initialized += 1;
     }
 
+    const backend = interface.getInterfaceOptions().backend;
+
     return .{
         .allocator = allocator,
         .interface = interface,
+        .backend = backend,
         .swapchains = @splat(undefined),
         .swapchain_count = 0,
         // frame
@@ -175,6 +179,10 @@ pub fn allocateConstantBuffer(self: *RenderDevice, comptime T: type, data: T) er
     const allocator = &self.constant_allocators[frame_index];
     const address = try allocator.alloc(@sizeOf(T));
     @memcpy(address.cpu, std.mem.asBytes(&data));
+    // my ResourceDescriptorHeap is a bit broken right now... let's just use gpu addresses for vulkan
+    if (self.backend == .vulkan) {
+        return .addr(address.gpu);
+    }
     return .{
         .buffer = self.interface.getDescriptorIndex(allocator.shader_resource_view),
         .offset = @intCast(address.offset),

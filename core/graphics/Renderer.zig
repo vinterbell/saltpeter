@@ -34,11 +34,14 @@ pub fn init(
         , "sky"),
         .rasterization = .default,
         .multisample = .default,
-        .depth_stencil = .no_depth_stencil,
+        .depth_stencil = .withDepth(
+            .always,
+            .no_write_depth,
+        ),
         .target_state = .targets(&.{
             .noBlend(.rgba8unorm),
             .noBlend(.rgba16f),
-        }, .d32f),
+        }, null),
         .primitive_topology = .triangle_list,
     }, "sky_pipeline");
 
@@ -126,16 +129,21 @@ fn drawSky(self: *SceneRenderer, cmd: *gpu.CommandList) void {
         @panic("Sky pipeline not loaded");
     };
 
-    interface.commandBeginRenderPass(cmd, .withDepthStencil(&.{
+    interface.commandBeginRenderPass(cmd, .colorOnly(&.{
         .color(.first(self.view.targets.albedo_metallic.texture), .discard, .store),
         .color(.first(self.view.targets.normal_roughness.texture), .discard, .store),
-    }, .depthStencil(
-        .first(self.view.targets.depth_texture.texture),
-        .loadClear(1.0),
-        .store,
-        .discard,
-        .discard,
-    )));
+    }));
+
+    // interface.commandBeginRenderPass(cmd, .withDepthStencil(&.{
+    //     .color(.first(self.view.targets.albedo_metallic.texture), .discard, .store),
+    //     .color(.first(self.view.targets.normal_roughness.texture), .discard, .store),
+    // }, .depthStencil(
+    //     .first(self.view.targets.depth_texture.texture),
+    //     .loadClear(1.0),
+    //     .discard,
+    //     .discard,
+    //     .discard,
+    // )));
     {
         defer interface.commandEndRenderPass(cmd);
         interface.commandBindPipeline(cmd, sky_pipeline);

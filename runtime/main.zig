@@ -217,10 +217,8 @@ pub fn main() !void {
 
         const cmd = rctx.ren.commandList();
         renderer.useSwapchain(swapchain, .final_composite);
-        // try renderer.begin(cmd, &camera);
-        // try renderer.end(cmd);
-
-        // _ = rctx.ren.useSwapchain(swapchain);
+        try renderer.begin(cmd, &camera);
+        try renderer.end(cmd);
 
         try rctx.us.doUploads(cmd);
         rctx.us.reset();
@@ -276,3 +274,10 @@ fn boolSignMap(pos: bool, neg: bool) f32 {
 }
 
 const linalg = @import("sp").math.linalg;
+
+// pub const std_options: std.Options = .{
+//     .log_scope_levels = &.{
+//         // .{ .scope = .vulkan_device, .level = .err },
+//         // .{ .scope = .vulkan_important, .level = .info },
+//     },
+// };

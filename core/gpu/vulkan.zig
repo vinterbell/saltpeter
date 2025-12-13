@@ -24,7 +24,6 @@ pub const Device = struct {
     descriptor_set_layouts: [3]vk.DescriptorSetLayout,
     pipeline_layout: vk.PipelineLayout,
 
-    descriptor_buffer_properties: vk.PhysicalDeviceDescriptorBufferPropertiesEXT,
     resource_descriptor_heap: DescriptorHeap,
     sampler_descriptor_heap: DescriptorHeap,
 
@@ -39,6 +38,7 @@ pub const Device = struct {
     pending_copy_transitions_count: usize,
 
     transition_texture_command_lists: [gpu.backbuffer_count]*gpu.CommandList,
+    transition_copy_command_lists: [gpu.backbuffer_count]*gpu.CommandList,
 
     is_done: bool,
 
@@ -83,46 +83,29 @@ pub const Device = struct {
         };
         self.vma = try createVMAllocator(vma_desc);
 
-        self.descriptor_buffer_properties = undefined;
-        self.descriptor_buffer_properties.s_type = .physical_device_descriptor_buffer_properties_ext;
-        self.descriptor_buffer_properties.p_next = null;
-
-        var properties: vk.PhysicalDeviceProperties2 = .{
-            .s_type = .physical_device_properties_2,
-            .p_next = &self.descriptor_buffer_properties,
-            .properties = undefined,
+        const pipeline_layout_desc: PipelineLayoutDesc = .{
+            .device = &self.device,
+            .out_descriptor_set_layouts = &self.descriptor_set_layouts,
         };
-        self.instance.getPhysicalDeviceProperties2(
-            self.physical_device,
-            &properties,
-        );
-
-        var resource_descriptor_size: usize = self.descriptor_buffer_properties.sampled_image_descriptor_size;
-        resource_descriptor_size = @max(resource_descriptor_size, self.descriptor_buffer_properties.storage_image_descriptor_size);
-        resource_descriptor_size = @max(resource_descriptor_size, self.descriptor_buffer_properties.robust_uniform_texel_buffer_descriptor_size);
-        resource_descriptor_size = @max(resource_descriptor_size, self.descriptor_buffer_properties.robust_storage_texel_buffer_descriptor_size);
-        resource_descriptor_size = @max(resource_descriptor_size, self.descriptor_buffer_properties.robust_uniform_buffer_descriptor_size);
-        resource_descriptor_size = @max(resource_descriptor_size, self.descriptor_buffer_properties.robust_storage_buffer_descriptor_size);
+        self.pipeline_layout = try createPipelineLayout(pipeline_layout_desc);
 
         self.resource_descriptor_heap = try .init(
             self,
             allocator,
-            @intCast(resource_descriptor_size),
+            .mutable_ext,
             gpu.max_resource_descriptor_count,
-            .{
-                .resource_descriptor_buffer_bit_ext = true,
-            },
+            self.descriptor_set_layouts[1],
+            "ResourceDescriptorHeap",
         );
         errdefer self.resource_descriptor_heap.deinit(allocator);
 
         self.sampler_descriptor_heap = try .init(
             self,
             allocator,
-            @intCast(self.descriptor_buffer_properties.sampler_descriptor_size),
+            .sampler,
             gpu.max_sampler_descriptor_count,
-            .{
-                .sampler_descriptor_buffer_bit_ext = true,
-            },
+            self.descriptor_set_layouts[2],
+            "SamplerDescriptorHeap",
         );
         errdefer self.sampler_descriptor_heap.deinit(allocator);
 
@@ -132,12 +115,6 @@ pub const Device = struct {
             const name = std.fmt.bufPrint(name_buf[0..], "Constant Buffer Frame {}", .{i}) catch "Constant Buffer";
             cb.* = try .init(self.interface(), allocator, 8 * 1024 * 1024, name);
         }
-
-        const pipeline_layout_desc: PipelineLayoutDesc = .{
-            .device = &self.device,
-            .out_descriptor_set_layouts = &self.descriptor_set_layouts,
-        };
-        self.pipeline_layout = try createPipelineLayout(pipeline_layout_desc);
 
         var transition_texture_command_lists_initialized: usize = 0;
         errdefer for (self.transition_texture_command_lists[0..transition_texture_command_lists_initialized]) |cmd| {
@@ -152,6 +129,21 @@ pub const Device = struct {
                 name,
             );
             transition_texture_command_lists_initialized += 1;
+        }
+
+        var transition_copy_command_lists_initialized: usize = 0;
+        errdefer for (self.transition_copy_command_lists[0..transition_copy_command_lists_initialized]) |cmd| {
+            self.interface().destroyCommandList(cmd);
+        };
+
+        for (0..gpu.backbuffer_count) |i| {
+            const name = std.fmt.bufPrint(name_buf[0..], "Copy Transition Command List {}", .{i}) catch "Copy Transition Command List";
+            self.transition_copy_command_lists[i] = try self.interface().createCommandList(
+                allocator,
+                .compute,
+                name,
+            );
+            transition_copy_command_lists_initialized += 1;
         }
 
         self.* = .{
@@ -176,7 +168,6 @@ pub const Device = struct {
             .constant_buffers = self.constant_buffers,
             .descriptor_set_layouts = self.descriptor_set_layouts,
             .pipeline_layout = self.pipeline_layout,
-            .descriptor_buffer_properties = self.descriptor_buffer_properties,
             .resource_descriptor_heap = self.resource_descriptor_heap,
             .sampler_descriptor_heap = self.sampler_descriptor_heap,
 
@@ -191,6 +182,7 @@ pub const Device = struct {
             .pending_copy_transitions_count = 0,
 
             .transition_texture_command_lists = self.transition_texture_command_lists,
+            .transition_copy_command_lists = self.transition_copy_command_lists,
 
             .is_done = false,
         };
@@ -200,6 +192,10 @@ pub const Device = struct {
         self.device.deviceWaitIdle() catch {};
 
         for (self.transition_texture_command_lists[0..]) |cmd| {
+            self.interface().destroyCommandList(cmd);
+        }
+
+        for (self.transition_copy_command_lists[0..]) |cmd| {
             self.interface().destroyCommandList(cmd);
         }
 
@@ -231,6 +227,9 @@ pub const Device = struct {
 
         const transition_cmd = self.transition_texture_command_lists[index];
         self.interface().resetCommandAllocator(transition_cmd);
+
+        const transition_copy_cmd = self.transition_copy_command_lists[index];
+        self.interface().resetCommandAllocator(transition_copy_cmd);
 
         const cb: *utils.LinearAllocatedBuffer = &self.constant_buffers[index];
         cb.reset();
@@ -298,13 +297,22 @@ pub const Device = struct {
                 self.device.destroyCommandPool(command_pool, null);
             },
             .command_buffer => {
-                const command_buffer: vk.CommandBuffer = @enumFromInt(pair.handle);
-                // Command buffers are freed when their command pool is destroyed
-                _ = command_buffer;
+                // cleaned up by command_pool
             },
             .pipeline => {
                 const pipeline: vk.Pipeline = @enumFromInt(pair.handle);
                 self.device.destroyPipeline(pipeline, null);
+            },
+            .descriptor_pool => {
+                const descriptor_pool: vk.DescriptorPool = @enumFromInt(pair.handle);
+                self.device.destroyDescriptorPool(descriptor_pool, null);
+            },
+            .descriptor_set_layout => {
+                const descriptor_set_layout: vk.DescriptorSetLayout = @enumFromInt(pair.handle);
+                self.device.destroyDescriptorSetLayout(descriptor_set_layout, null);
+            },
+            .descriptor_set => {
+                // cleaned up by descriptor_set_layout
             },
             else => |k| log.warn("Unhandled Vulkan object type for deletion: {}", .{k}),
         }
@@ -378,16 +386,23 @@ pub const Device = struct {
         } else if (texture.desc.usage.shader_write) {
             self.addDefaultTransition(texture, .write);
         } else {
-            self.addDefaultTransition(texture, .{ .copy_dst = true });
+            self.addDefaultTransitionCopy(texture, .{ .copy_dst = true });
         }
     }
 
     fn cancelDefaultTransition(self: *Device, texture: *Texture) void {
         for (self.pending_texture_transitions[0..self.pending_texture_transitions_count], 0..) |entry, idx| {
             if (entry.@"0" == texture) {
-                // Remove by swapping with last and decreasing count
                 self.pending_texture_transitions[idx] = self.pending_texture_transitions[self.pending_texture_transitions_count - 1];
                 self.pending_texture_transitions_count -= 1;
+                return;
+            }
+        }
+
+        for (self.pending_copy_transitions[0..self.pending_copy_transitions_count], 0..) |entry, idx| {
+            if (entry.@"0" == texture) {
+                self.pending_copy_transitions[idx] = self.pending_copy_transitions[self.pending_copy_transitions_count - 1];
+                self.pending_copy_transitions_count -= 1;
                 return;
             }
         }
@@ -402,18 +417,31 @@ pub const Device = struct {
         self.pending_texture_transitions_count += 1;
     }
 
-    fn flushLayoutTransition(self: *Device) void {
+    fn addDefaultTransitionCopy(self: *Device, texture: *Texture, new_access: gpu.Access) void {
+        if (self.pending_copy_transitions_count >= self.pending_copy_transitions.len) {
+            log.warn("Pending copy transitions full, flushing layout transitions", .{});
+            return;
+        }
+        self.pending_copy_transitions[self.pending_copy_transitions_count] = .{ texture, new_access };
+        self.pending_copy_transitions_count += 1;
+    }
+
+    fn flushLayoutTransition(self: *Device, sync_cmd: *CommandList) void {
         const index = self.frame_idx % gpu.backbuffer_count;
 
-        const texture_cmd = self.transition_texture_command_lists[index];
-        const self_cmd: *CommandList = .fromGpuCommandList(texture_cmd);
+        const perform_texture_transition = self.pending_texture_transitions_count > 0 and sync_cmd.queue == .graphics;
 
-        if (self.pending_texture_transitions_count > 0 or self.pending_copy_transitions_count > 0) {
-            self_cmd.resetAllocator();
-            self_cmd.begin() catch {};
+        const texture_cmd = self.transition_texture_command_lists[index];
+        const copy_cmd = self.transition_copy_command_lists[index];
+        const self_texture_cmd: *CommandList = .fromGpuCommandList(texture_cmd);
+        const self_copy_cmd: *CommandList = .fromGpuCommandList(copy_cmd);
+
+        if (perform_texture_transition) {
+            self_texture_cmd.begin() catch {};
+
             for (self.pending_texture_transitions[0..self.pending_texture_transitions_count]) |entry| {
                 const self_texture: *Texture = entry.@"0";
-                self_cmd.textureBarrier(
+                self_texture_cmd.textureBarrier(
                     self_texture,
                     gpu.all_subresource,
                     .{ .discard = true },
@@ -422,21 +450,27 @@ pub const Device = struct {
             }
             self.pending_texture_transitions_count = 0;
 
-            // for (self.pending_copy_transitions[0..self.pending_copy_transitions_count]) |entry| {
-            //     i.commandTextureBarrier(
-            //         texture_cmd,
-            //         entry.@"0",
-            //         gpu.all_subresource,
-            //         .{ .discard = true },
-            //         entry.@"1",
-            //     );
-            // }
-            // self.pending_copy_transitions_count = 0;
+            self_texture_cmd.end() catch {};
+            self_texture_cmd.submit(true) catch {};
+        }
 
-            self_cmd.end() catch {};
-            self_cmd.submit() catch {};
-            // i.endCommandList(texture_cmd) catch {};
-            // i.submitCommandList(texture_cmd) catch {};
+        const perform_copy_transition = self.pending_copy_transitions_count > 0;
+        if (perform_copy_transition) {
+            self_copy_cmd.begin() catch {};
+
+            for (self.pending_copy_transitions[0..self.pending_copy_transitions_count]) |entry| {
+                const self_texture: *Texture = entry.@"0";
+                self_copy_cmd.textureBarrier(
+                    self_texture,
+                    gpu.all_subresource,
+                    .{ .discard = true },
+                    entry.@"1",
+                );
+            }
+            self.pending_copy_transitions_count = 0;
+
+            self_copy_cmd.end() catch {};
+            self_copy_cmd.submit(true) catch {};
         }
     }
 
@@ -464,60 +498,15 @@ pub const Device = struct {
         return .false;
     }
 
-    fn allocateConstant(self: *Device, data: []const u8) error{OutOfMemory}!gpu.utils.LinearAllocatedBuffer.Address {
+    fn allocateConstant(self: *Device, data: []const u8) error{OutOfMemory}!struct { gpu.utils.LinearAllocatedBuffer.Address, vk.Buffer } {
         const cb: *utils.LinearAllocatedBuffer = &self.constant_buffers[self.frame_idx % gpu.backbuffer_count];
         const address = try cb.alloc(@intCast(data.len));
         const cpu_address = address.cpu;
         @memcpy(cpu_address, data);
-        return address;
-    }
 
-    fn allocateConstantBufferDescriptor(
-        self: *Device,
-        root: []const u32,
-        first: *const vk.DescriptorAddressInfoEXT,
-        second: *const vk.DescriptorAddressInfoEXT,
-    ) !vk.DeviceSize {
-        const ub_size = self.descriptor_buffer_properties.robust_uniform_buffer_descriptor_size;
-        const size = gpu.max_root_constant_size_bytes + ub_size * 2;
-        const allocator = self.constantBufferAllocator();
-        const address = try allocator.alloc(@intCast(size));
+        const self_buffer: *Buffer = .fromGpuBuffer(cb.buffer);
 
-        @memcpy(
-            address.cpu[0 .. root.len * @sizeOf(u32)],
-            @as([]const u8, @ptrCast(@alignCast(root))),
-        );
-
-        var descriptor_info: vk.DescriptorGetInfoEXT = .{
-            .type = .uniform_buffer,
-            .data = .{
-                .p_uniform_buffer = null,
-            },
-        };
-
-        if (first.address != 0) {
-            descriptor_info.data = .{
-                .p_uniform_buffer = first,
-            };
-            self.device.getDescriptorEXT(
-                &descriptor_info,
-                ub_size,
-                address.cpu[gpu.max_root_constant_size_bytes..].ptr,
-            );
-        }
-
-        if (second.address != 0) {
-            descriptor_info.data = .{
-                .p_uniform_buffer = second,
-            };
-            self.device.getDescriptorEXT(
-                &descriptor_info,
-                ub_size,
-                address.cpu[gpu.max_root_constant_size_bytes + ub_size ..].ptr,
-            );
-        }
-
-        return address.gpu.toInt() - allocator.gpu_address;
+        return .{ address, self_buffer.buffer };
     }
 
     const CreateVulkanInstanceDesc = struct {
@@ -567,7 +556,6 @@ pub const Device = struct {
             try required_layer_names.append(arena, validation_layer_name);
         }
 
-        // check for swapchain
         const surface_ext = vk.extensions.khr_surface;
         try required_extension_names.append(arena, surface_ext.name);
         if (!findExtension(extensions, surface_ext.name)) {
@@ -575,7 +563,6 @@ pub const Device = struct {
             return error.Gpu;
         }
 
-        // check for platform surface extensions
         const platform_surface_extension_names: []const [*:0]const u8 = switch (builtin.os.tag) {
             .windows => &.{vk.extensions.khr_win_32_surface.name},
             // .linux => switch (builtin.abi) {
@@ -633,7 +620,7 @@ pub const Device = struct {
                 .application_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
                 .p_engine_name = "saltpeter_engine",
                 .engine_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
-                .api_version = @bitCast(vk.API_VERSION_1_3),
+                .api_version = @bitCast(vk.API_VERSION_1_4),
             },
             .enabled_layer_count = @intCast(required_layer_names.items.len),
             .pp_enabled_layer_names = required_layer_names.items.ptr,
@@ -748,14 +735,13 @@ pub const Device = struct {
 
         try required_device_extension_names.appendSlice(arena, &.{
             vk.extensions.khr_swapchain.name,
-            vk.extensions.khr_dynamic_rendering.name,
-            vk.extensions.khr_synchronization_2.name,
-            vk.extensions.khr_timeline_semaphore.name,
+            // vk.extensions.khr_dynamic_rendering.name,
+            // vk.extensions.khr_synchronization_2.name,
+            // vk.extensions.khr_timeline_semaphore.name,
             vk.extensions.ext_mutable_descriptor_type.name,
-            vk.extensions.ext_scalar_block_layout.name,
-            vk.extensions.ext_descriptor_indexing.name,
-            vk.extensions.ext_descriptor_buffer.name,
-            vk.extensions.khr_buffer_device_address.name,
+                // vk.extensions.ext_scalar_block_layout.name,
+                // vk.extensions.ext_descriptor_indexing.name,
+                // vk.extensions.khr_buffer_device_address.name,
         });
 
         log.info("Creating Vulkan device with {d} extensions", .{required_device_extension_names.items.len});
@@ -802,7 +788,8 @@ pub const Device = struct {
             },
         };
 
-        const features = instance.getPhysicalDeviceFeatures(device_desc.out_physical_device.*);
+        var features = instance.getPhysicalDeviceFeatures(device_desc.out_physical_device.*);
+        features.robust_buffer_access = .false;
         var vulkan_12_features: vk.PhysicalDeviceVulkan12Features = .{
             .descriptor_indexing = .true,
             .buffer_device_address = .true,
@@ -817,7 +804,11 @@ pub const Device = struct {
             .scalar_block_layout = .true,
             .runtime_descriptor_array = .true,
             .descriptor_binding_partially_bound = .true,
+            .descriptor_binding_sampled_image_update_after_bind = .true,
             .timeline_semaphore = .true,
+            .vulkan_memory_model = .true,
+            .vulkan_memory_model_device_scope = .true,
+            .uniform_and_storage_buffer_8_bit_access = .true,
         };
 
         var vulkan_13_features: vk.PhysicalDeviceVulkan13Features = .{
@@ -832,16 +823,11 @@ pub const Device = struct {
             .mutable_descriptor_type = .true,
         };
 
-        var descriptor_buffer_features: vk.PhysicalDeviceDescriptorBufferFeaturesEXT = .{
-            .p_next = &mutable_descriptor_features,
-            .descriptor_buffer = .true,
-        };
-
         const logical_device = try instance.createDevice(device_desc.out_physical_device.*, &.{
             .p_queue_create_infos = &queue_create_infos,
             .queue_create_info_count = @intCast(queue_create_infos.len),
             .p_enabled_features = &features,
-            .p_next = &descriptor_buffer_features,
+            .p_next = &mutable_descriptor_features,
             .enabled_extension_count = @intCast(required_device_extension_names.items.len),
             .pp_enabled_extension_names = required_device_extension_names.items.ptr,
         }, null);
@@ -924,7 +910,7 @@ pub const Device = struct {
             .device = desc.device.handle,
             .instance = desc.instance.handle,
             .pVulkanFunctions = &functions,
-            .vulkanApiVersion = @bitCast(vk.API_VERSION_1_3),
+            .vulkanApiVersion = @bitCast(vk.API_VERSION_1_4),
         };
 
         var allocator: vk_mem_alloc.Allocator = undefined;
@@ -953,6 +939,22 @@ pub const Device = struct {
             // .acceleration_structure_khr,
         };
 
+        const push_constant_range: vk.PushConstantRange = .{
+            .stage_flags = .{
+                .vertex_bit = true,
+                .fragment_bit = true,
+                .compute_bit = true,
+            },
+            .offset = 0,
+            .size = gpu.max_root_constant_size_bytes,
+        };
+
+        const descriptor_binding_flags: vk.DescriptorBindingFlags = .{
+            .update_after_bind_bit = true,
+            .partially_bound_bit = true,
+            // .variable_descriptor_count_bit = true,
+        };
+
         const type_list: vk.MutableDescriptorTypeListEXT = .{
             .descriptor_type_count = @intCast(mutable_descriptor_types.len),
             .p_descriptor_types = &mutable_descriptor_types,
@@ -970,17 +972,11 @@ pub const Device = struct {
         };
 
         const num_constants = @typeInfo(gpu.ConstantSlot).@"enum".fields.len;
-        var constant_buffers: [num_constants]vk.DescriptorSetLayoutBinding = undefined;
-        constant_buffers[0] = .{
-            .binding = 0,
-            .descriptor_type = .inline_uniform_block,
-            .descriptor_count = gpu.max_root_constant_size_bytes,
-            .stage_flags = all_shader_stage_flags,
-        };
-
-        for (1..num_constants) |i| {
+        const num_constant_buffers = num_constants - 1;
+        var constant_buffers: [num_constant_buffers]vk.DescriptorSetLayoutBinding = undefined;
+        for (0..num_constant_buffers) |i| {
             constant_buffers[i] = .{
-                .binding = @intCast(i),
+                .binding = @intCast(i + 1),
                 .descriptor_type = .uniform_buffer,
                 .descriptor_count = 1,
                 .stage_flags = all_shader_stage_flags,
@@ -1003,21 +999,32 @@ pub const Device = struct {
 
         const constants_set: vk.DescriptorSetLayoutCreateInfo = .{
             .binding_count = @intCast(constant_buffers.len),
-            .flags = .{ .descriptor_buffer_bit_ext = true },
+            .flags = .{
+                .update_after_bind_pool_bit = true,
+                .push_descriptor_bit = true,
+            },
             .p_bindings = &constant_buffers,
         };
 
         const resource_heap_set: vk.DescriptorSetLayoutCreateInfo = .{
             .binding_count = 1,
-            .flags = .{ .descriptor_buffer_bit_ext = true },
+            .flags = .{ .update_after_bind_pool_bit = true },
             .p_bindings = &.{resource_descriptor_heap},
-            .p_next = &mutable_descriptor_info,
+            .p_next = &vk.DescriptorSetLayoutBindingFlagsCreateInfo{
+                .p_next = &mutable_descriptor_info,
+                .binding_count = 1,
+                .p_binding_flags = &.{descriptor_binding_flags},
+            },
         };
 
         const sampler_heap_set: vk.DescriptorSetLayoutCreateInfo = .{
             .binding_count = 1,
-            .flags = .{ .descriptor_buffer_bit_ext = true },
+            .flags = .{ .update_after_bind_pool_bit = true },
             .p_bindings = &.{sampler_descriptor_heap},
+            .p_next = &vk.DescriptorSetLayoutBindingFlagsCreateInfo{
+                .binding_count = 1,
+                .p_binding_flags = &.{descriptor_binding_flags},
+            },
         };
 
         desc.out_descriptor_set_layouts.* = .{
@@ -1030,6 +1037,8 @@ pub const Device = struct {
             .p_next = &mutable_descriptor_info,
             .set_layout_count = @intCast(desc.out_descriptor_set_layouts.*.len),
             .p_set_layouts = desc.out_descriptor_set_layouts,
+            .push_constant_range_count = 1,
+            .p_push_constant_ranges = &.{push_constant_range},
         };
 
         return desc.device.createPipelineLayout(&pipeline_layout_info, null);
@@ -1067,86 +1076,79 @@ pub const Device = struct {
     }
 };
 
-// gpu visible buffer which has descriptor buffer
 const DescriptorHeap = struct {
     device: *Device,
 
-    buffer: vk.Buffer,
-    allocation: vk_mem_alloc.Allocation,
+    pool: vk.DescriptorPool,
+    set: vk.DescriptorSet,
     offset_allocator: OffsetAllocator,
-    gpu_address: vk.DeviceAddress,
-    cpu_address: [*]u8,
-    descriptor_size: u32,
+    descriptor_type: vk.DescriptorType,
     descriptor_count: u32,
 
     fn init(
         device: *Device,
         allocator: std.mem.Allocator,
-        descriptor_size: u32,
+        descriptor_type: vk.DescriptorType,
         descriptor_count: u32,
-        usage: vk.BufferUsageFlags,
+        set_layout: vk.DescriptorSetLayout,
+        name: []const u8,
     ) !DescriptorHeap {
-        const create_info: vk.BufferCreateInfo = .{
-            .size = descriptor_size * descriptor_count,
-            .usage = usage.merge(.{ .shader_device_address_bit = true }),
-            .sharing_mode = .exclusive,
+        var pool_sizes: [1]vk.DescriptorPoolSize = .{
+            .{
+                .type = descriptor_type,
+                .descriptor_count = descriptor_count,
+            },
         };
 
-        const allocation_create_info: vk_mem_alloc.AllocationCreateInfo = .{
-            .usage = .cpu_to_gpu,
-            .flags = .{ .dedicated_memory_bit = true, .mapped_bit = true },
+        const create_pool_info: vk.DescriptorPoolCreateInfo = .{
+            .flags = .{ .update_after_bind_bit = true },
+            .max_sets = 1,
+            .pool_size_count = 1,
+            .p_pool_sizes = &pool_sizes,
         };
 
-        var buffer: vk.Buffer = .null_handle;
-        var allocation: vk_mem_alloc.Allocation = undefined;
-
-        var allocation_info: vk_mem_alloc.AllocationInfo = undefined;
-        const result = device.vma.createBuffer(
-            &create_info,
-            &allocation_create_info,
-            &buffer,
-            &allocation,
-            &allocation_info,
+        const pool = try device.device.createDescriptorPool(
+            &create_pool_info,
+            null,
         );
-        if (result != .success) {
-            log.err("Failed to create descriptor heap buffer: {d}", .{result});
-            return error.Gpu;
-        }
-        errdefer {
-            device.vma.destroyBuffer(buffer, allocation);
-        }
 
-        const cpu_address: [*]u8 = @ptrCast(allocation_info.pMappedData.?);
-        const gpu_address = device.device.getBufferDeviceAddress(&.{
-            .buffer = buffer,
-        });
+        const allocate_set_info: vk.DescriptorSetAllocateInfo = .{
+            .descriptor_pool = pool,
+            .descriptor_set_count = 1,
+            .p_set_layouts = &.{set_layout},
+        };
 
-        const offset_allocator: OffsetAllocator = try .init(allocator, descriptor_count, descriptor_count);
+        var out_sets: [1]vk.DescriptorSet = undefined;
+        try device.device.allocateDescriptorSets(&allocate_set_info, &out_sets);
+
+        var offset_allocator: OffsetAllocator = try .init(
+            allocator,
+            descriptor_count,
+            descriptor_count,
+        );
         errdefer offset_allocator.deinit(allocator);
+
+        setDebugName(&device.device, .descriptor_pool, vk.DescriptorPool, pool, name);
+        setDebugName(&device.device, .descriptor_set, vk.DescriptorSet, out_sets[0], name);
 
         return .{
             .device = device,
-            .buffer = buffer,
-            .allocation = allocation,
             .offset_allocator = offset_allocator,
-            .gpu_address = gpu_address,
-            .cpu_address = cpu_address,
-            .descriptor_size = descriptor_size,
+            .pool = pool,
+            .set = out_sets[0],
+            .descriptor_type = descriptor_type,
             .descriptor_count = descriptor_count,
         };
     }
 
     fn deinit(heap: *DescriptorHeap, allocator: std.mem.Allocator) void {
-        heap.device.vma.destroyBuffer(heap.buffer, heap.allocation);
+        heap.device.deleteObject(.descriptor_pool, @intFromEnum(heap.pool));
         heap.offset_allocator.deinit(allocator);
     }
 
-    fn alloc(heap: *DescriptorHeap) !struct { OffsetAllocator.Allocation, []u8 } {
+    fn alloc(heap: *DescriptorHeap) !OffsetAllocator.Allocation {
         const allocation = try heap.offset_allocator.allocate(1);
-        return .{
-            allocation,
-            heap.cpu_address[allocation.offset * heap.descriptor_size ..][0..heap.descriptor_size],
-        };
+        return allocation;
     }
 
     fn free(heap: *DescriptorHeap, allocation: OffsetAllocator.Allocation) void {
@@ -1183,7 +1185,6 @@ const Buffer = struct {
                 .shader_device_address_bit = true,
                 .storage_buffer_bit = desc.usage.shader_write,
                 .uniform_buffer_bit = desc.usage.constant_buffer,
-                .resource_descriptor_buffer_bit_ext = desc.usage.constant_buffer,
                 // .acceleration_structure_build_input_read_only_bit_khr = desc.usage.acceleration_structure,
             },
             .sharing_mode = .exclusive,
@@ -1290,12 +1291,9 @@ const CommandList = struct {
     pending_swapchains: [max_present_swapchains]*Swapchain = undefined,
     pending_swapchains_count: usize = 0,
 
-    graphics_constants: Constants = undefined,
-    compute_constants: Constants = undefined,
+    graphics_constants: Constants = .zero,
+    compute_constants: Constants = .zero,
 
-    // render_pass_render_targets: [8]d3d12.RENDER_PASS_RENDER_TARGET_DESC = undefined,
-    // render_pass_render_target_count: usize = 0,
-    // render_pass_depth_stencil: ?d3d12.RENDER_PASS_DEPTH_STENCIL_DESC = null,
     is_in_render_pass: bool = false,
     command_count: u64 = 0,
 
@@ -1305,9 +1303,48 @@ const CommandList = struct {
 
     const Constants = struct {
         root: [@divExact(gpu.max_root_constant_size_bytes, 4)]u32,
-        first: vk.DescriptorAddressInfoEXT,
-        second: vk.DescriptorAddressInfoEXT,
+        first: vk.DescriptorBufferInfo,
+        second: vk.DescriptorBufferInfo,
         dirty: bool,
+
+        pub const zero: Constants = .{
+            .root = undefined,
+            .first = .{
+                .buffer = .null_handle,
+                .offset = 0,
+                .range = 0,
+            },
+            .second = .{
+                .buffer = .null_handle,
+                .offset = 0,
+                .range = 0,
+            },
+            .dirty = false,
+        };
+
+        pub fn setRoot(self: *Constants, root: []const u8) void {
+            const len = @min(root.len, self.root.len * 4);
+            @memcpy(@as([]u8, @ptrCast(self.root[0..]))[0..len], root[0..len]);
+            self.dirty = true;
+        }
+
+        pub fn setFirstBuffer(self: *Constants, buffer: vk.Buffer, offset: u64, range: u64) void {
+            self.first = .{
+                .buffer = buffer,
+                .offset = offset,
+                .range = range,
+            };
+            self.dirty = true;
+        }
+
+        pub fn setSecondBuffer(self: *Constants, buffer: vk.Buffer, offset: u64, range: u64) void {
+            self.second = .{
+                .buffer = buffer,
+                .offset = offset,
+                .range = range,
+            };
+            self.dirty = true;
+        }
     };
 
     fn init(self: *CommandList, device: *Device, allocator: std.mem.Allocator, command_queue: gpu.Queue, name: []const u8) Error!void {
@@ -1323,9 +1360,7 @@ const CommandList = struct {
         };
 
         const command_pool_info: vk.CommandPoolCreateInfo = .{
-            .flags = .{
-                .reset_command_buffer_bit = true,
-            },
+            .flags = .{},
             .queue_family_index = switch (command_queue) {
                 .graphics => device.graphics_queue_family_index,
                 .compute => device.compute_queue_family_index,
@@ -1358,36 +1393,6 @@ const CommandList = struct {
         self.command_buffer = out_command_buffers[0];
 
         setDebugName(&device.device, .command_buffer, vk.CommandBuffer, self.command_buffer, name);
-
-        self.graphics_constants = .{
-            .root = undefined,
-            .first = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .second = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .dirty = false,
-        };
-
-        self.compute_constants = .{
-            .root = undefined,
-            .first = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .second = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .dirty = false,
-        };
     }
 
     fn deinit(self: *CommandList) void {
@@ -1408,13 +1413,6 @@ const CommandList = struct {
             log.err("Cannot reset command allocator while command list is open", .{});
             self.end() catch {};
         }
-
-        // self.device.device.resetCommandBuffer(self.command_buffer, .{
-        //     .release_resources_bit = true,
-        // }) catch |err| {
-        //     log.err("Failed to reset command buffer: {s}", .{@errorName(err)});
-        //     @panic("Failed to reset command buffer");
-        // };
 
         self.device.device.resetCommandPool(self.command_pool, .{
             .release_resources_bit = true,
@@ -1487,8 +1485,8 @@ const CommandList = struct {
         return;
     }
 
-    fn submit(self: *CommandList) Error!void {
-        self.device.flushLayoutTransition();
+    fn submit(self: *CommandList, wait_idle: bool) Error!void {
+        self.device.flushLayoutTransition(self);
 
         var wait_semaphores: [64]vk.Semaphore = undefined;
         var wait_values: [64]u64 = undefined;
@@ -1546,12 +1544,10 @@ const CommandList = struct {
             *s,
         | {
             ws.* = swapchain.getAcquireSemaphore();
-            // binary semaphore
             w.* = 0;
             stage.* = .{ .top_of_pipe_bit = true };
 
             ss.* = swapchain.getPresentSemaphore();
-            // binary semaphore
             s.* = 0;
 
             timeline_info.wait_semaphore_value_count += 1;
@@ -1561,12 +1557,12 @@ const CommandList = struct {
         const submit_info: vk.SubmitInfo = .{
             .p_next = &timeline_info,
             .wait_semaphore_count = timeline_info.wait_semaphore_value_count,
-            .p_wait_semaphores = &wait_semaphores,
-            .p_wait_dst_stage_mask = &wait_stages,
+            .p_wait_semaphores = if (timeline_info.wait_semaphore_value_count != 0) &wait_semaphores else null,
+            .p_wait_dst_stage_mask = if (timeline_info.wait_semaphore_value_count != 0) &wait_stages else null,
             .command_buffer_count = 1,
             .p_command_buffers = &.{self.command_buffer},
             .signal_semaphore_count = timeline_info.signal_semaphore_value_count,
-            .p_signal_semaphores = &signal_semaphores,
+            .p_signal_semaphores = if (timeline_info.signal_semaphore_value_count != 0) &signal_semaphores else null,
         };
         self.device.device.queueSubmit(
             self.vk_queue,
@@ -1585,6 +1581,13 @@ const CommandList = struct {
             };
         }
         self.pending_swapchains_count = 0;
+
+        // just here for testing
+        if (wait_idle)
+            self.device.device.queueWaitIdle(self.vk_queue) catch |err| {
+                log.err("Failed to wait for queue idle: {s}", .{@errorName(err)});
+                return error.Gpu;
+            };
     }
 
     fn resetState(self: *CommandList) void {
@@ -1598,90 +1601,61 @@ const CommandList = struct {
         self.command_count = 0;
         self.current_pipeline_state = .null_handle;
 
-        self.graphics_constants = .{
-            .root = undefined,
-            .first = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .second = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .dirty = false,
-        };
-
-        self.compute_constants = .{
-            .root = undefined,
-            .first = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .second = .{
-                .address = 0,
-                .range = 0,
-                .format = .undefined,
-            },
-            .dirty = false,
-        };
+        self.graphics_constants = .zero;
+        self.compute_constants = .zero;
 
         if (self.queue == .graphics or self.queue == .compute) {
-            const cbuffer = self.device.constantBufferAllocator().buffer;
-
-            const cbuffer_gpu_address = impl.getBufferGpuAddress(self.device, cbuffer);
-
-            const root_binding: vk.DescriptorBufferBindingInfoEXT = .{
-                .address = cbuffer_gpu_address.toInt(),
-                .usage = .{ .resource_descriptor_buffer_bit_ext = true },
-            };
-
-            const first_heap_binding: vk.DescriptorBufferBindingInfoEXT = .{
-                .address = self.device.resource_descriptor_heap.gpu_address,
-                .usage = .{ .resource_descriptor_buffer_bit_ext = true },
-            };
-
-            const second_heap_binding: vk.DescriptorBufferBindingInfoEXT = .{
-                .address = self.device.sampler_descriptor_heap.gpu_address,
-                .usage = .{ .sampler_descriptor_buffer_bit_ext = true },
-            };
-
-            const descriptor_buffers: [3]vk.DescriptorBufferBindingInfoEXT = .{
-                root_binding,
-                first_heap_binding,
-                second_heap_binding,
-            };
-
-            self.device.device.cmdBindDescriptorBuffersEXT(
-                self.command_buffer,
-                3,
-                &descriptor_buffers,
-            );
-
-            const buffer_indices: [2]u32 = .{ 1, 2 };
-            const offsets: [2]vk.DeviceSize = .{ 0, 0 };
-
-            self.device.device.cmdSetDescriptorBufferOffsetsEXT(
+            self.device.device.cmdBindDescriptorSets(
                 self.command_buffer,
                 .compute,
                 self.device.pipeline_layout,
                 1,
+                1,
+                &.{
+                    self.device.resource_descriptor_heap.set,
+                },
+                0,
+                null,
+            );
+
+            self.device.device.cmdBindDescriptorSets(
+                self.command_buffer,
+                .compute,
+                self.device.pipeline_layout,
                 2,
-                &buffer_indices,
-                &offsets,
+                1,
+                &.{
+                    self.device.sampler_descriptor_heap.set,
+                },
+                0,
+                null,
             );
 
             if (self.queue == .graphics) {
-                self.device.device.cmdSetDescriptorBufferOffsetsEXT(
+                self.device.device.cmdBindDescriptorSets(
                     self.command_buffer,
                     .graphics,
                     self.device.pipeline_layout,
                     1,
+                    1,
+                    &.{
+                        self.device.resource_descriptor_heap.set,
+                    },
+                    0,
+                    null,
+                );
+
+                self.device.device.cmdBindDescriptorSets(
+                    self.command_buffer,
+                    .graphics,
+                    self.device.pipeline_layout,
                     2,
-                    &buffer_indices,
-                    &offsets,
+                    1,
+                    &.{
+                        self.device.sampler_descriptor_heap.set,
+                    },
+                    0,
+                    null,
                 );
             }
         }
@@ -1825,79 +1799,51 @@ const CommandList = struct {
     fn setComputeConstants(self: *CommandList, slot: gpu.ConstantSlot, data: []const u8) void {
         const buffer_slot: u32 = switch (slot) {
             .root => {
-                std.debug.assert(data.len <= gpu.max_root_constant_size_bytes);
-                @memcpy(
-                    @as([]u8, @ptrCast(self.compute_constants.root[0..]))[0..data.len],
-                    data,
-                );
+                self.compute_constants.setRoot(data);
                 return;
             },
             .buffer1 => 1,
             .buffer2 => 2,
         };
 
-        const address = self.device.allocateConstant(data) catch {
+        const address, const vk_buffer = self.device.allocateConstant(data) catch {
             log.err("Failed to allocate constant buffer for compute root constants", .{});
             return;
         };
         switch (buffer_slot) {
             1 => {
-                self.compute_constants.first = .{
-                    .address = address.gpu.toInt(),
-                    .range = data.len,
-                    .format = .undefined,
-                };
+                self.compute_constants.setFirstBuffer(vk_buffer, address.offset, data.len);
             },
             2 => {
-                self.compute_constants.second = .{
-                    .address = address.gpu.toInt(),
-                    .range = data.len,
-                    .format = .undefined,
-                };
+                self.compute_constants.setSecondBuffer(vk_buffer, address.offset, data.len);
             },
             else => unreachable,
         }
-
-        self.compute_constants.dirty = true;
     }
 
     fn setGraphicsConstants(self: *CommandList, slot: gpu.ConstantSlot, data: []const u8) void {
         const buffer_slot: u32 = switch (slot) {
             .root => {
-                std.debug.assert(data.len <= gpu.max_root_constant_size_bytes);
-                @memcpy(
-                    @as([]u8, @ptrCast(self.graphics_constants.root[0..]))[0..data.len],
-                    data,
-                );
+                self.graphics_constants.setRoot(data);
                 return;
             },
             .buffer1 => 1,
             .buffer2 => 2,
         };
 
-        const address = self.device.allocateConstant(data) catch {
-            log.err("Failed to allocate constant buffer for compute root constants", .{});
+        const address, const vk_buffer = self.device.allocateConstant(data) catch {
+            log.err("Failed to allocate constant buffer for graphics root constants", .{});
             return;
         };
         switch (buffer_slot) {
             1 => {
-                self.graphics_constants.first = .{
-                    .address = address.gpu.toInt(),
-                    .range = data.len,
-                    .format = .undefined,
-                };
+                self.graphics_constants.setFirstBuffer(vk_buffer, address.offset, data.len);
             },
             2 => {
-                self.graphics_constants.second = .{
-                    .address = address.gpu.toInt(),
-                    .range = data.len,
-                    .format = .undefined,
-                };
+                self.graphics_constants.setSecondBuffer(vk_buffer, address.offset, data.len);
             },
             else => unreachable,
         }
-
-        self.graphics_constants.dirty = true;
     }
 
     // render pass
@@ -2068,11 +2014,12 @@ const CommandList = struct {
         const count = @min(viewports.len, vk_viewports.len);
 
         for (viewports[0..count], 0..) |viewport, i| {
+            // flip so it's like dx12
             vk_viewports[i] = .{
                 .x = viewport.x,
-                .y = viewport.y,
+                .y = viewport.y + viewport.height,
                 .width = viewport.width,
-                .height = viewport.height,
+                .height = -viewport.height,
                 .min_depth = viewport.min_depth,
                 .max_depth = viewport.max_depth,
             };
@@ -2199,16 +2146,6 @@ const CommandList = struct {
         _ = buffer;
         _ = count;
         @panic("TODO: Not implemented yet, implement multi draw signature");
-        // self.updateGraphicsDescriptorBuffer();
-        // self.device.device.cmdDrawIndirectCount(
-        //     self.command_buffer,
-        //     .fromGpuBuffer(buffer.buffer).buffer,
-        //     buffer.offset,
-        //     .fromGpuBuffer(count.buffer).buffer,
-        //     count.offset,
-        //     @intCast(count.size / @sizeOf(gpu.IndirectDrawCommand)),
-        //     0,
-        // );
     }
 
     fn multiDrawIndexedIndirect(self: *CommandList, buffer: gpu.Buffer.Slice, count: gpu.Buffer.Location) void {
@@ -2424,26 +2361,11 @@ const CommandList = struct {
             return;
         }
 
-        const buffer_offset = self.device.allocateConstantBufferDescriptor(
-            &self.graphics_constants.root,
-            &self.graphics_constants.first,
-            &self.graphics_constants.second,
-        ) catch |err| {
-            log.err("Failed to allocate constant buffer for graphics root constants ({s})", .{@errorName(err)});
-            return;
-        };
-
-        const buffer_indices: [1]u32 = .{0};
-        const offsets: [1]vk.DeviceSize = .{buffer_offset};
-
-        self.device.device.cmdSetDescriptorBufferOffsetsEXT(
-            self.command_buffer,
+        self.bindRootConstants(
             .graphics,
-            self.device.pipeline_layout,
-            0,
-            1,
-            &buffer_indices,
-            &offsets,
+            self.graphics_constants.root[0..],
+            self.graphics_constants.first,
+            self.graphics_constants.second,
         );
 
         self.graphics_constants.dirty = false;
@@ -2454,36 +2376,91 @@ const CommandList = struct {
             return;
         }
 
-        const buffer_offset = self.device.allocateConstantBufferDescriptor(
-            &self.compute_constants.root,
-            &self.compute_constants.first,
-            &self.compute_constants.second,
-        ) catch |err| {
-            log.err("Failed to allocate constant buffer for compute root constants ({s})", .{@errorName(err)});
-            return;
-        };
-
-        const buffer_indices: [1]u32 = .{0};
-        const offsets: [1]vk.DeviceSize = .{buffer_offset};
-
-        self.device.device.cmdSetDescriptorBufferOffsetsEXT(
-            self.command_buffer,
+        self.bindRootConstants(
             .compute,
-            self.device.pipeline_layout,
-            0,
-            1,
-            &buffer_indices,
-            &offsets,
+            self.compute_constants.root[0..],
+            self.compute_constants.first,
+            self.compute_constants.second,
         );
 
         self.compute_constants.dirty = false;
+    }
+
+    fn bindRootConstants(
+        self: *CommandList,
+        bindpoint: vk.PipelineBindPoint,
+        root: []const u32,
+        first: vk.DescriptorBufferInfo,
+        second: vk.DescriptorBufferInfo,
+    ) void {
+        self.device.device.cmdPushConstants(
+            self.command_buffer,
+            self.device.pipeline_layout,
+            .{
+                .vertex_bit = true,
+                .fragment_bit = true,
+                .compute_bit = true,
+            },
+            0,
+            @intCast(root.len * @sizeOf(u32)),
+            root.ptr,
+        );
+
+        const descriptor_write_first: vk.WriteDescriptorSet = .{
+            .dst_set = .null_handle,
+            .dst_binding = 1,
+            .dst_array_element = 0,
+            .descriptor_count = 1,
+            .descriptor_type = .uniform_buffer,
+            .p_image_info = &.{},
+            .p_buffer_info = &.{first},
+            .p_texel_buffer_view = &.{},
+        };
+
+        const descriptor_write_second: vk.WriteDescriptorSet = .{
+            .dst_set = .null_handle,
+            .dst_binding = 2,
+            .dst_array_element = 0,
+            .descriptor_count = 1,
+            .descriptor_type = .uniform_buffer,
+            .p_image_info = &.{},
+            .p_buffer_info = &.{second},
+            .p_texel_buffer_view = &.{},
+        };
+
+        var writes: [2]vk.WriteDescriptorSet = undefined;
+        var write_count: u32 = 0;
+        if (first.buffer != .null_handle) {
+            writes[write_count] = descriptor_write_first;
+            write_count += 1;
+        }
+        if (second.buffer != .null_handle) {
+            writes[write_count] = descriptor_write_second;
+            write_count += 1;
+        }
+
+        if (write_count == 0) {
+            return;
+        }
+
+        self.device.device.cmdPushDescriptorSet(
+            self.command_buffer,
+            bindpoint,
+            self.device.pipeline_layout,
+            0,
+            write_count,
+            &writes,
+        );
     }
 };
 
 const Descriptor = struct {
     device: *Device,
     allocator: std.mem.Allocator = undefined,
-    resource: ?Resource = null,
+
+    image_view: vk.ImageView = .null_handle,
+    sampler: vk.Sampler = .null_handle,
+
     descriptor: OffsetAllocator.Allocation = .invalid,
     descriptor_size: usize = 0,
     kind: gpu.Descriptor.Kind,
@@ -2503,202 +2480,102 @@ const Descriptor = struct {
         self.* = .{
             .device = device,
             .kind = desc.kind,
-        };
-
-        const descriptor_buffer_properties = device.descriptor_buffer_properties;
-
-        var descriptor_info: vk.DescriptorGetInfoEXT = .{
-            .type = undefined,
-            .data = undefined,
-        };
-        var buffer_info: vk.DescriptorAddressInfoEXT = .{
-            .address = 0,
-            .range = 0,
-            .format = .undefined,
-        };
-        var image_info: vk.DescriptorImageInfo = .{
             .sampler = .null_handle,
             .image_view = .null_handle,
-            .image_layout = if (desc.kind.isRead()) .shader_read_only_optimal else .general,
         };
-        var image_view_usage_create_info: vk.ImageViewUsageCreateInfo = .{
-            .usage = .{
-                .sampled_bit = desc.kind.isRead(),
-                .storage_bit = desc.kind.isWrite(),
-            },
-        };
-        var image_view_create_info: vk.ImageViewCreateInfo = .{
-            .flags = .{},
-            .image = .null_handle,
-            .view_type = .@"2d",
-            .format = .undefined,
-            .components = .{
-                .r = .identity,
-                .g = .identity,
-                .b = .identity,
-                .a = .identity,
-            },
-            .subresource_range = undefined,
-        };
-        image_view_create_info.s_type = .image_view_create_info;
-        image_view_create_info.p_next = null;
 
-        var image_view: vk.ImageView = .null_handle;
-        switch (desc.resource) {
-            .texture => |t| {
+        const descriptor_type: vk.DescriptorType = switch (desc.kind) {
+            .shader_read_texture_2d,
+            .shader_read_texture_2d_array,
+            .shader_read_texture_cube,
+            .shader_read_texture_3d,
+            => .sampled_image,
+            .shader_write_texture_2d,
+            .shader_write_texture_2d_array,
+            .shader_write_texture_3d,
+            => .storage_image,
+            .shader_read_buffer => .uniform_buffer,
+            .shader_write_buffer,
+            => .storage_buffer,
+            .constant_buffer => .uniform_buffer,
+            .sampler => .sampler,
+            .shader_read_top_level_acceleration_structure => @panic("TODO"),
+        };
+
+        const buffer_info: vk.DescriptorBufferInfo = switch (desc.resource) {
+            .buffer => |b| blk: {
+                const buffer: *Buffer = .fromGpuBuffer(b.buffer);
+                const buffer_desc = buffer.desc;
+
+                const computed_size = b.size.toInt() orelse
+                    buffer_desc.size - b.offset;
+
+                std.debug.assert(b.offset % 4 == 0);
+                std.debug.assert(computed_size % 4 == 0);
+
+                break :blk .{
+                    .buffer = buffer.buffer,
+                    .offset = b.offset,
+                    .range = @intCast(computed_size),
+                };
+            },
+            else => .{
+                .buffer = .null_handle,
+                .offset = 0,
+                .range = 0,
+            },
+        };
+
+        const image_info: vk.DescriptorImageInfo = switch (desc.resource) {
+            .texture => |t| blk: {
                 const texture: *Texture = .fromGpuTexture(t.texture);
-                image_view_create_info.p_next = &image_view_usage_create_info;
-                image_view_create_info.image = texture.image;
-                image_view_create_info.format = conv.vkFormat(desc.format, true);
-                image_view_create_info.subresource_range = .{
-                    .aspect_mask = conv.formatToAspectMask(desc.format),
-                    .base_mip_level = t.mip_level,
-                    .level_count = if (desc.kind.isRead()) t.mip_level_count else 1,
-                    .base_array_layer = t.depth_or_array_layer,
-                    .layer_count = t.depth_or_array_layer_count,
+
+                var image_view_create_info: vk.ImageViewCreateInfo = .{
+                    .p_next = &vk.ImageViewUsageCreateInfo{
+                        .usage = .{
+                            .sampled_bit = desc.kind.isRead(),
+                            .storage_bit = desc.kind.isWrite(),
+                        },
+                    },
+                    .flags = .{},
+                    .image = texture.image,
+                    .view_type = switch (desc.kind) {
+                        .shader_read_texture_2d => .@"2d",
+                        .shader_read_texture_2d_array => .@"2d_array",
+                        .shader_read_texture_cube => .cube,
+                        .shader_read_texture_3d => .@"3d",
+                        .shader_write_texture_2d => .@"2d",
+                        .shader_write_texture_2d_array => .@"2d_array",
+                        else => @panic("Invalid descriptor kind for texture resource"),
+                    },
+                    .format = conv.vkFormat(desc.format, true),
+                    .components = .{
+                        .r = .identity,
+                        .g = .identity,
+                        .b = .identity,
+                        .a = .identity,
+                    },
+                    .subresource_range = .{
+                        .aspect_mask = conv.formatToAspectMask(desc.format),
+                        .base_mip_level = t.mip_level,
+                        .level_count = if (desc.kind.isRead()) t.mip_level_count else 1,
+                        .base_array_layer = t.depth_or_array_layer,
+                        .layer_count = t.depth_or_array_layer_count,
+                    },
                 };
 
-                descriptor_info.type = if (desc.kind.isRead()) .sampled_image else .storage_image;
-                descriptor_info.data = .{
-                    // same data for sampled and storage images
-                    .p_storage_image = &image_info,
+                self.image_view = try device.device.createImageView(
+                    &image_view_create_info,
+                    null,
+                );
+
+                break :blk .{
+                    .sampler = .null_handle,
+                    .image_view = self.image_view,
+                    .image_layout = if (desc.kind.isRead()) .shader_read_only_optimal else .general,
                 };
-                self.descriptor_size = descriptor_buffer_properties.sampled_image_descriptor_size;
             },
-            else => {},
-        }
-
-        var sampler: vk.Sampler = .null_handle;
-        switch (desc.kind) {
-            .shader_read_texture_2d => {
-                image_view_create_info.view_type = .@"2d";
-                image_view = try device.device.createImageView(
-                    &image_view_create_info,
-                    null,
-                );
-                image_info.image_view = image_view;
-            },
-            .shader_read_texture_2d_array => {
-                image_view_create_info.view_type = .@"2d_array";
-                image_view = try device.device.createImageView(
-                    &image_view_create_info,
-                    null,
-                );
-                image_info.image_view = image_view;
-            },
-            .shader_read_texture_cube => {
-                image_view_create_info.view_type = .cube;
-                image_view = try device.device.createImageView(
-                    &image_view_create_info,
-                    null,
-                );
-                image_info.image_view = image_view;
-            },
-            .shader_read_texture_3d => {
-                image_view_create_info.view_type = .@"3d";
-                image_view = try device.device.createImageView(
-                    &image_view_create_info,
-                    null,
-                );
-                image_info.image_view = image_view;
-            },
-            .shader_read_buffer => {
-                const buffer: *Buffer = .fromGpuBuffer(desc.resource.buffer.buffer);
-
-                const buffer_desc = buffer.desc;
-
-                const computed_size = desc.resource.buffer.size.toInt() orelse
-                    buffer_desc.size - desc.resource.buffer.offset;
-
-                // std.debug.assert(desc.format == .unknown);
-                std.debug.assert(desc.resource.buffer.offset % 4 == 0);
-                std.debug.assert(computed_size % 4 == 0);
-
-                buffer_info.address = buffer.gpuAddress().toInt() + desc.resource.buffer.offset;
-                buffer_info.range = @intCast(computed_size);
-
-                descriptor_info.type = .storage_buffer;
-                descriptor_info.data = .{
-                    .p_storage_buffer = &buffer_info,
-                };
-
-                self.descriptor_size = descriptor_buffer_properties.storage_buffer_descriptor_size;
-            },
-            .shader_read_top_level_acceleration_structure => {
-                // kind = .SRV;
-                @panic("TODO");
-            },
-
-            .shader_write_texture_2d => {
-                image_view_create_info.view_type = .@"2d";
-                image_view = try device.device.createImageView(
-                    &image_view_create_info,
-                    null,
-                );
-                image_info.image_view = image_view;
-            },
-            .shader_write_texture_2d_array => {
-                image_view_create_info.view_type = .@"2d_array";
-                image_view = try device.device.createImageView(
-                    &image_view_create_info,
-                    null,
-                );
-                image_info.image_view = image_view;
-            },
-            .shader_write_texture_3d => {
-                image_view_create_info.view_type = .@"3d";
-                image_view = try device.device.createImageView(
-                    &image_view_create_info,
-                    null,
-                );
-                image_info.image_view = image_view;
-            },
-            .shader_write_buffer => {
-                const buffer: *Buffer = .fromGpuBuffer(desc.resource.buffer.buffer);
-
-                const buffer_desc = buffer.desc;
-
-                std.debug.assert(buffer_desc.usage.shader_write);
-
-                const computed_size = desc.resource.buffer.size.toInt() orelse
-                    buffer_desc.size - desc.resource.buffer.offset;
-
-                // std.debug.assert(desc.format == .unknown);
-                std.debug.assert(desc.resource.buffer.offset % 4 == 0);
-                std.debug.assert(computed_size % 4 == 0);
-
-                buffer_info.address = buffer.gpuAddress().toInt() + desc.resource.buffer.offset;
-                buffer_info.range = @intCast(computed_size);
-
-                descriptor_info.type = .storage_buffer;
-                descriptor_info.data = .{
-                    .p_storage_buffer = &buffer_info,
-                };
-                self.descriptor_size = descriptor_buffer_properties.storage_buffer_descriptor_size;
-            },
-
-            .constant_buffer => {
-                const buffer: *Buffer = .fromGpuBuffer(desc.resource.buffer.buffer);
-
-                const buffer_desc = buffer.desc;
-
-                const computed_size = desc.resource.buffer.size.toInt() orelse
-                    buffer_desc.size - desc.resource.buffer.offset;
-
-                std.debug.assert(desc.format == .unknown);
-                std.debug.assert(computed_size % 256 == 0);
-
-                buffer_info.address = buffer.gpuAddress().toInt() + desc.resource.buffer.offset;
-                buffer_info.range = @intCast(computed_size);
-
-                descriptor_info.type = .uniform_buffer;
-                descriptor_info.data = .{
-                    .p_uniform_buffer = &buffer_info,
-                };
-                self.descriptor_size = descriptor_buffer_properties.uniform_buffer_descriptor_size;
-            },
-            .sampler => {
-                const sampler_info = desc.resource.sampler;
+            .sampler => |sampler_info| blk: {
                 const use_anisotropy = sampler_info.anisotropy > 1;
                 const use_comparison = sampler_info.compare_op != .never;
 
@@ -2723,58 +2600,58 @@ const Descriptor = struct {
                     .unnormalized_coordinates = .false,
                 };
 
-                sampler = try device.device.createSampler(
+                self.sampler = try device.device.createSampler(
                     &create_info,
                     null,
                 );
 
-                descriptor_info.type = .sampler;
-                descriptor_info.data = .{
-                    .p_sampler = &sampler,
+                break :blk .{
+                    .sampler = self.sampler,
+                    .image_view = .null_handle,
+                    .image_layout = .undefined,
                 };
-                self.descriptor_size = descriptor_buffer_properties.sampler_descriptor_size;
             },
-        }
+            else => .{
+                .sampler = .null_handle,
+                .image_view = .null_handle,
+                .image_layout = .undefined,
+            },
+        };
 
-        const allocation, const descriptor = if (sampler != .null_handle)
+        const allocation = if (descriptor_type == .sampler)
             try device.sampler_descriptor_heap.alloc()
         else
             try device.resource_descriptor_heap.alloc();
         self.descriptor = allocation;
 
-        device.device.getDescriptorEXT(
-            &descriptor_info,
-            self.descriptor_size,
-            descriptor.ptr,
-        );
+        const descriptor_write: vk.WriteDescriptorSet = .{
+            .dst_set = if (descriptor_type == .sampler)
+                device.sampler_descriptor_heap.set
+            else
+                device.resource_descriptor_heap.set,
+            .dst_binding = 0,
+            .dst_array_element = @intCast(allocation.offset),
+            .descriptor_count = 1,
+            .descriptor_type = descriptor_type,
+            .p_buffer_info = &.{buffer_info},
+            .p_image_info = &.{image_info},
+            .p_texel_buffer_view = &.{.null_handle},
+        };
 
-        if (sampler != .null_handle) {
-            self.resource = .{ .sampler = sampler };
-        } else if (image_view != .null_handle) {
-            self.resource = .{ .texture = .{
-                .texture = switch (desc.resource) {
-                    .texture => |t| .fromGpuTexture(t.texture),
-                    else => unreachable,
-                },
-                .view = image_view,
-            } };
-        } else {
-            self.resource = switch (desc.resource) {
-                .buffer => |b| .{ .buffer = .fromGpuBuffer(b.buffer) },
-                else => unreachable,
-            };
-        }
+        log_important.info("Created descriptor of kind {s} at index {d}", .{ @tagName(desc.kind), self.descriptor.offset });
+
+        device.device.updateDescriptorSets(1, &.{descriptor_write}, 0, null);
     }
 
     fn deinit(self: *Descriptor) void {
-        switch (self.resource.?) {
-            .texture => |t| {
-                self.device.deleteObject(.image_view, @intFromEnum(t.view));
-            },
-            .sampler => |s| {
-                self.device.deleteObject(.sampler, @intFromEnum(s));
-            },
-            else => {},
+        if (self.image_view != .null_handle) {
+            self.device.deleteObject(.image_view, @intFromEnum(self.image_view));
+            self.image_view = .null_handle;
+        }
+
+        if (self.sampler != .null_handle) {
+            self.device.deleteObject(.sampler, @intFromEnum(self.sampler));
+            self.sampler = .null_handle;
         }
 
         switch (self.kind) {
@@ -3026,7 +2903,12 @@ const Pipeline = struct {
                 .src_alpha_blend_factor = .one,
                 .dst_alpha_blend_factor = .zero,
                 .alpha_blend_op = .add,
-                .color_write_mask = .{},
+                .color_write_mask = .{
+                    .r_bit = true,
+                    .g_bit = true,
+                    .b_bit = true,
+                    .a_bit = true,
+                },
             };
         }
 
@@ -3075,7 +2957,7 @@ const Pipeline = struct {
             .render_pass = .null_handle,
             .subpass = 0,
             .p_next = &rendering_create_info,
-            .flags = .{ .descriptor_buffer_bit_ext = true },
+            .flags = .{},
         };
 
         var result_pipeline: [1]vk.Pipeline = .{.null_handle};
@@ -3110,44 +2992,10 @@ const Pipeline = struct {
         _ = desc;
         _ = name;
         @panic("TODO: Not implemented yet");
-        // self.* = .{
-        //     .device = device,
-        //     .topology = null,
-        //     .handle = undefined,
-        //     .kind = .compute,
-        // };
-
-        // const root_signature = device.root_signature;
-
-        // var cpdesc: d3d12.COMPUTE_PIPELINE_STATE_DESC = .initDefault();
-        // cpdesc.pRootSignature = root_signature;
-        // cpdesc.CS = conv.shaderBytecode(desc.cs);
-
-        // var pipeline_state: ?*d3d12.IPipelineState = null;
-        // const hr_create_pipeline = device.device.idevice.CreateComputePipelineState(
-        //     &cpdesc,
-        //     win32.riid(d3d12.IPipelineState),
-        //     @ptrCast(&pipeline_state),
-        // );
-        // if (hr_create_pipeline != win32.S_OK) {
-        //     log.err("Failed to create D3D12 compute pipeline state ({s}): {f}", .{
-        //         name,
-        //         win32.fmtHresult(hr_create_pipeline, .code_message),
-        //     });
-        //     return error.Gpu;
-        // }
-        // self.handle = pipeline_state.?;
-
-        // const hr_set_name = try self.handle.iobject.setNameUtf8(name);
-        // if (hr_set_name != win32.S_OK) {
-        //     log.err("Failed to set pipeline name: {f}", .{win32.fmtHresult(hr_set_name, .code_message)});
-        //     return error.Gpu;
-        // }
     }
 
     fn deinit(self: *Pipeline) void {
         self.device.deleteObject(.pipeline, @intFromEnum(self.pipeline));
-        // self.device.deleteIUnknown(&self.handle.iunknown);
     }
 
     fn fromGpuPipeline(pipeline: *gpu.Pipeline) *Pipeline {
@@ -3369,6 +3217,18 @@ const Swapchain = struct {
             log.info("Supported present mode: {}", .{mode});
         }
 
+        var surface_format_count: u32 = 0;
+        const result_query_format_count = try instance.getPhysicalDeviceSurfaceFormatsKHR(
+            physical_device,
+            created_surface,
+            &surface_format_count,
+            null,
+        );
+        if (result_query_format_count != .success) {
+            log.err("Failed to query surface format count: {}", .{result_query_format_count});
+            return error.Gpu;
+        }
+
         const supports_mailbox = std.mem.indexOfScalar(
             vk.PresentModeKHR,
             present_mode_buf[0..present_mode_count],
@@ -3388,22 +3248,10 @@ const Swapchain = struct {
         height: u32,
         name: []const u8,
     ) !vk.SwapchainKHR {
-        // const format_up = conv.vkFormat(compositionToTextureFormat(format), true);
-        const format_down = compositionToTextureFormat(format);
-        // const view_formats: [2]vk.Format = .{
-        //     format_up,
-        //     format_down,
-        // };
-
-        // const format_info: vk.ImageFormatListCreateInfo = .{
-        //     .view_format_count = @intCast(view_formats.len),
-        //     .p_view_formats = &view_formats,
-        // };
-
         var create_info: vk.SwapchainCreateInfoKHR = .{
             .surface = surface,
             .min_image_count = gpu.backbuffer_count,
-            .image_format = format_down,
+            .image_format = compositionToTextureFormat(format),
             .image_color_space = compositionToColorSpace(format),
             .image_extent = .{
                 .width = width,
@@ -3532,7 +3380,7 @@ const Swapchain = struct {
     ) !void {
         try self.device.device.deviceWaitIdle();
 
-        // need to call this to update surface capabilities
+        // need to call this to update surface capabilities (surface extent), no idea why
         _ = self.device.instance.getPhysicalDeviceSurfaceCapabilitiesKHR(
             self.device.physical_device,
             self.surface,
@@ -3547,7 +3395,6 @@ const Swapchain = struct {
 
         for (self.acquire_semaphores) |s| {
             if (s != .null_handle) {
-                // self.device.device.destroySemaphore(s, null);
                 self.device.deleteObject(.semaphore, @intFromEnum(s));
             }
         }
@@ -3797,7 +3644,6 @@ const Texture = struct {
         self.image_views = .initSlice(try allocator.alloc(vk.ImageView, desc.mip_levels * desc.depth_or_array_layers));
         @memset(self.image_views.slice(), .null_handle);
 
-        // log.info("create texture: desc={}", .{desc});
         self.device.enqueueDefaultTransition(self);
     }
 
@@ -3820,7 +3666,6 @@ const Texture = struct {
 
         self.image_views = InlineStorage(vk.ImageView, 1).initFixed(&.{.null_handle}) catch unreachable;
 
-        // log.info("swapchain texture: desc={}", .{self.desc});
         self.device.enqueueDefaultTransition(self);
     }
 
@@ -4098,7 +3943,7 @@ const impl = struct {
         cmd_list: *gpu.CommandList,
     ) Error!void {
         const cl: *CommandList = .fromGpuCommandList(cmd_list);
-        try cl.submit();
+        try cl.submit(false);
     }
 
     fn resetCommandList(
@@ -4674,8 +4519,8 @@ const impl = struct {
 };
 
 const vtable: gpu.Interface.VTable = .{
-    .deinit = impl.deinit, // impl.deinit,
-    .get_interface_options = impl.getInterfaceOptions, // impl.getInterfaceOptions,
+    .deinit = impl.deinit,
+    .get_interface_options = impl.getInterfaceOptions,
     .begin_frame = impl.beginFrame,
     .end_frame = impl.endFrame,
     .get_frame_index = impl.getFrameIndex,
@@ -4902,7 +4747,7 @@ const conv = struct {
         };
         const flags: vk.ImageCreateFlags = .{
             .cube_compatible_bit = desc.dimension == .cube,
-            .mutable_format_bit = true,
+            // .mutable_format_bit = true,
         };
 
         return .{
@@ -5660,6 +5505,7 @@ const vk = @import("vulkan");
 
 const spatial = @import("../math/spatial.zig");
 
-const log = std.log.scoped(.vulkan);
+const log = std.log.scoped(.vulkan_device);
+const log_important = std.log.scoped(.vulkan_important);
 
 const OffsetAllocator = @import("OffsetAllocator.zig");

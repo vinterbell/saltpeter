@@ -69,7 +69,7 @@ pub const Device = struct {
             if (d3d12.GetDebugInterface(win32.riid(d3d12d.IDebug1), @ptrCast(&debug_controller)) == win32.S_OK) {
                 debug_controller.?.EnableDebugLayer();
                 // if (options.validation == .full) {
-                debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
+                // debug_controller.?.SetEnableGPUBasedValidation(.TRUE);
                 // }
                 factory_flags |= dxgi.CREATE_FACTORY_DEBUG;
             }
@@ -190,13 +190,9 @@ pub const Device = struct {
         }
         errdefer _ = self.device.iunknown.Release();
 
-        // TODO: check for resource binding 3
-        // TODO: check for shading model 6.6
-        // TODO: check for renderpasses 0
-        // TODO: check for enhanced barriers
+        // TODO: checks for the features
 
         {
-            // TODO: add stuff to info queue
             var info_queue: ?*d3d12d.IInfoQueue = null;
             const hr_info = self.device.iunknown.QueryInterface(win32.riid(d3d12d.IInfoQueue), @ptrCast(&info_queue));
             if (hr_info == win32.S_OK) {
@@ -1094,7 +1090,6 @@ const CommandList = struct {
         self.current_pipeline_state = null;
 
         if (self.queue == .graphics or self.queue == .compute) {
-            // Set a default descriptor heap to avoid validation errors
             const heaps: [2]*d3d12.IDescriptorHeap = .{ self.device.resource_heap.heap, self.device.sampler_heap.heap };
             self.command_list.igraphicscommandlist.SetDescriptorHeaps(2, &heaps);
 
@@ -2483,7 +2478,6 @@ const Swapchain = struct {
 
         swapchain.releaseSwapchainResources();
 
-        // TODO: flush deferred deletes
         swapchain.device.cleanupFully();
 
         var desc: dxgi.SWAP_CHAIN_DESC1 = .zero;
@@ -2605,7 +2599,6 @@ const Swapchain = struct {
         var fmt_buf: [512]u8 = undefined;
 
         for (0..gpu.backbuffer_count) |i| {
-            // var texture = &self.textures[i];
             var backbuffer: ?*d3d12.IResource = null;
             const hr_get_buffer = self.handle.?.iswap_chain.GetBuffer(
                 @as(u32, @intCast(i)),
@@ -2678,12 +2671,9 @@ const Texture = struct {
     rtvs: InlineStorage(DescriptorHeap.Handle, 1) = .empty,
     /// length is layer * levels
     dsvs: InlineStorage(DescriptorHeap.Handle, 1) = .empty,
-    /// staging heap descriptor
-    // srv: ?instance.DescriptorHeap.Descriptor,
 
     desc: gpu.Texture.Desc,
 
-    /// set .handle to a backing texture to use it aliasing
     fn init(self: *Texture, device: *Device, allocator: std.mem.Allocator, desc: gpu.Texture.Desc, name: []const u8) Error!void {
         self.* = .{
             .device = device,
