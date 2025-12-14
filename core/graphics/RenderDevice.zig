@@ -133,7 +133,7 @@ pub fn beginFrame(self: *RenderDevice) Error!void {
     const frame_index = self.interface.getFrameIndex() % gpu.backbuffer_count;
     {
         try self.interface.waitFence(self.frame_fence, if (self.current_frame_fence_value >= gpu.backbuffer_count)
-            1 + self.current_frame_fence_value - gpu.backbuffer_count
+            self.current_frame_fence_value - gpu.backbuffer_count + 1
         else
             0);
         self.constant_allocators[frame_index].reset();

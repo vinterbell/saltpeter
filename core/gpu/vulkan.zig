@@ -32,13 +32,7 @@ pub const Device = struct {
     resource_deletion_queue: StaticRingBuffer(OffsetAllocator.Allocation, gpu.backbuffer_count, 512),
     sampler_deletion_queue: StaticRingBuffer(OffsetAllocator.Allocation, gpu.backbuffer_count, 512),
 
-    pending_texture_transitions: [256]struct { *Texture, gpu.Access },
-    pending_texture_transitions_count: usize,
-    pending_copy_transitions: [256]struct { *Texture, gpu.Access },
-    pending_copy_transitions_count: usize,
-
-    transition_texture_command_lists: [gpu.backbuffer_count]*gpu.CommandList,
-    transition_copy_command_lists: [gpu.backbuffer_count]*gpu.CommandList,
+    single_submit: SingleSubmitCommandBufferPool,
 
     is_done: bool,
 
@@ -116,35 +110,38 @@ pub const Device = struct {
             cb.* = try .init(self.interface(), allocator, 8 * 1024 * 1024, name);
         }
 
-        var transition_texture_command_lists_initialized: usize = 0;
-        errdefer for (self.transition_texture_command_lists[0..transition_texture_command_lists_initialized]) |cmd| {
-            self.interface().destroyCommandList(cmd);
-        };
+        // var transition_texture_command_lists_initialized: usize = 0;
+        // errdefer for (self.transition_texture_command_lists[0..transition_texture_command_lists_initialized]) |cmd| {
+        //     self.interface().destroyCommandList(cmd);
+        // };
 
-        for (0..gpu.backbuffer_count) |i| {
-            const name = std.fmt.bufPrint(name_buf[0..], "Texture Transition Command List {}", .{i}) catch "Texture Transition Command List";
-            self.transition_texture_command_lists[i] = try self.interface().createCommandList(
-                allocator,
-                .graphics,
-                name,
-            );
-            transition_texture_command_lists_initialized += 1;
-        }
+        // for (0..gpu.backbuffer_count) |i| {
+        //     const name = std.fmt.bufPrint(name_buf[0..], "Texture Transition Command List {}", .{i}) catch "Texture Transition Command List";
+        //     self.transition_texture_command_lists[i] = try self.interface().createCommandList(
+        //         allocator,
+        //         .graphics,
+        //         name,
+        //     );
+        //     transition_texture_command_lists_initialized += 1;
+        // }
 
-        var transition_copy_command_lists_initialized: usize = 0;
-        errdefer for (self.transition_copy_command_lists[0..transition_copy_command_lists_initialized]) |cmd| {
-            self.interface().destroyCommandList(cmd);
-        };
+        // var transition_copy_command_lists_initialized: usize = 0;
+        // errdefer for (self.transition_copy_command_lists[0..transition_copy_command_lists_initialized]) |cmd| {
+        //     self.interface().destroyCommandList(cmd);
+        // };
 
-        for (0..gpu.backbuffer_count) |i| {
-            const name = std.fmt.bufPrint(name_buf[0..], "Copy Transition Command List {}", .{i}) catch "Copy Transition Command List";
-            self.transition_copy_command_lists[i] = try self.interface().createCommandList(
-                allocator,
-                .compute,
-                name,
-            );
-            transition_copy_command_lists_initialized += 1;
-        }
+        // for (0..gpu.backbuffer_count) |i| {
+        //     const name = std.fmt.bufPrint(name_buf[0..], "Copy Transition Command List {}", .{i}) catch "Copy Transition Command List";
+        //     self.transition_copy_command_lists[i] = try self.interface().createCommandList(
+        //         allocator,
+        //         .compute,
+        //         name,
+        //     );
+        //     transition_copy_command_lists_initialized += 1;
+        // }
+
+        self.single_submit = try .init(self, "Single Submit CommandPool");
+        errdefer self.single_submit.deinit();
 
         self.* = .{
             .allocator = allocator,
@@ -176,13 +173,7 @@ pub const Device = struct {
             .resource_deletion_queue = .empty,
             .sampler_deletion_queue = .empty,
 
-            .pending_texture_transitions = undefined,
-            .pending_texture_transitions_count = 0,
-            .pending_copy_transitions = undefined,
-            .pending_copy_transitions_count = 0,
-
-            .transition_texture_command_lists = self.transition_texture_command_lists,
-            .transition_copy_command_lists = self.transition_copy_command_lists,
+            .single_submit = self.single_submit,
 
             .is_done = false,
         };
@@ -191,13 +182,15 @@ pub const Device = struct {
     pub fn deinit(self: *Device) void {
         self.device.deviceWaitIdle() catch {};
 
-        for (self.transition_texture_command_lists[0..]) |cmd| {
-            self.interface().destroyCommandList(cmd);
-        }
+        self.single_submit.deinit();
 
-        for (self.transition_copy_command_lists[0..]) |cmd| {
-            self.interface().destroyCommandList(cmd);
-        }
+        // for (self.transition_texture_command_lists[0..]) |cmd| {
+        //     self.interface().destroyCommandList(cmd);
+        // }
+
+        // for (self.transition_copy_command_lists[0..]) |cmd| {
+        //     self.interface().destroyCommandList(cmd);
+        // }
 
         for (self.constant_buffers[0..]) |*cb| {
             cb.deinit();
@@ -216,7 +209,9 @@ pub const Device = struct {
         self.device.destroyPipelineLayout(self.pipeline_layout, null);
 
         self.device.destroyDevice(null);
-        self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
+        if (self.debug_messenger != .null_handle) {
+            self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
+        }
         self.instance.destroyInstance(null);
     }
 
@@ -224,13 +219,6 @@ pub const Device = struct {
         self.garbageCollect();
 
         const index = self.frame_idx % gpu.backbuffer_count;
-
-        const transition_cmd = self.transition_texture_command_lists[index];
-        self.interface().resetCommandAllocator(transition_cmd);
-
-        const transition_copy_cmd = self.transition_copy_command_lists[index];
-        self.interface().resetCommandAllocator(transition_copy_cmd);
-
         const cb: *utils.LinearAllocatedBuffer = &self.constant_buffers[index];
         cb.reset();
 
@@ -376,102 +364,48 @@ pub const Device = struct {
     }
 
     fn enqueueDefaultTransition(self: *Device, texture: *Texture) void {
-        // i.e., swapchain texture
-        if (texture.allocation == .null_handle) {
-            self.addDefaultTransition(texture, .{ .present = true });
-        } else if (texture.desc.usage.render_target) {
-            self.addDefaultTransition(texture, .{ .render_target = true });
-        } else if (texture.desc.usage.depth_stencil) {
-            self.addDefaultTransition(texture, .{ .depth_stencil = true });
-        } else if (texture.desc.usage.shader_write) {
-            self.addDefaultTransition(texture, .write);
-        } else {
-            self.addDefaultTransitionCopy(texture, .{ .copy_dst = true });
-        }
-    }
+        const old_access: gpu.Access = .{ .discard = true };
+        const new_access: gpu.Access = blk: {
+            if (texture.allocation == .null_handle) break :blk .{ .present = true };
+            if (texture.desc.usage.render_target) break :blk .{ .render_target = true };
+            if (texture.desc.usage.depth_stencil) break :blk .{ .depth_stencil = true };
+            if (texture.desc.usage.shader_write) break :blk .write;
+            break :blk .{ .copy_dst = true };
+        };
 
-    fn cancelDefaultTransition(self: *Device, texture: *Texture) void {
-        for (self.pending_texture_transitions[0..self.pending_texture_transitions_count], 0..) |entry, idx| {
-            if (entry.@"0" == texture) {
-                self.pending_texture_transitions[idx] = self.pending_texture_transitions[self.pending_texture_transitions_count - 1];
-                self.pending_texture_transitions_count -= 1;
-                return;
-            }
-        }
-
-        for (self.pending_copy_transitions[0..self.pending_copy_transitions_count], 0..) |entry, idx| {
-            if (entry.@"0" == texture) {
-                self.pending_copy_transitions[idx] = self.pending_copy_transitions[self.pending_copy_transitions_count - 1];
-                self.pending_copy_transitions_count -= 1;
-                return;
-            }
-        }
-    }
-
-    fn addDefaultTransition(self: *Device, texture: *Texture, new_access: gpu.Access) void {
-        if (self.pending_texture_transitions_count >= self.pending_texture_transitions.len) {
-            log.warn("Pending texture transitions full, flushing layout transitions", .{});
+        const cmd = self.single_submit.begin() catch |err| {
+            log.err("Failed to allocate single submit command buffer for default transition: {s}", .{@errorName(err)});
             return;
-        }
-        self.pending_texture_transitions[self.pending_texture_transitions_count] = .{ texture, new_access };
-        self.pending_texture_transitions_count += 1;
-    }
+        };
+        defer self.single_submit.end(cmd) catch |err| {
+            log.err("Failed to end single submit command buffer for default transition: {s}", .{@errorName(err)});
+        };
 
-    fn addDefaultTransitionCopy(self: *Device, texture: *Texture, new_access: gpu.Access) void {
-        if (self.pending_copy_transitions_count >= self.pending_copy_transitions.len) {
-            log.warn("Pending copy transitions full, flushing layout transitions", .{});
-            return;
-        }
-        self.pending_copy_transitions[self.pending_copy_transitions_count] = .{ texture, new_access };
-        self.pending_copy_transitions_count += 1;
-    }
+        const image_barrier: vk.ImageMemoryBarrier2 = .{
+            .image = texture.image,
+            .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+            .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+            .src_stage_mask = conv.stageMask(old_access),
+            .dst_stage_mask = conv.stageMask(new_access),
+            .src_access_mask = conv.accessMask(old_access),
+            .dst_access_mask = conv.accessMask(new_access),
+            .old_layout = conv.imageLayoutFromAccess(old_access),
+            .new_layout = conv.imageLayoutFromAccess(new_access),
+            .subresource_range = .{
+                .aspect_mask = conv.formatToAspectMask(texture.desc.format),
+                .base_mip_level = 0,
+                .level_count = vk.REMAINING_MIP_LEVELS,
+                .base_array_layer = 0,
+                .layer_count = vk.REMAINING_ARRAY_LAYERS,
+            },
+        };
 
-    fn flushLayoutTransition(self: *Device, sync_cmd: *CommandList) void {
-        const index = self.frame_idx % gpu.backbuffer_count;
+        const dependency_info: vk.DependencyInfo = .{
+            .image_memory_barrier_count = 1,
+            .p_image_memory_barriers = &.{image_barrier},
+        };
 
-        const perform_texture_transition = self.pending_texture_transitions_count > 0 and sync_cmd.queue == .graphics;
-
-        const texture_cmd = self.transition_texture_command_lists[index];
-        const copy_cmd = self.transition_copy_command_lists[index];
-        const self_texture_cmd: *CommandList = .fromGpuCommandList(texture_cmd);
-        const self_copy_cmd: *CommandList = .fromGpuCommandList(copy_cmd);
-
-        if (perform_texture_transition) {
-            self_texture_cmd.begin() catch {};
-
-            for (self.pending_texture_transitions[0..self.pending_texture_transitions_count]) |entry| {
-                const self_texture: *Texture = entry.@"0";
-                self_texture_cmd.textureBarrier(
-                    self_texture,
-                    gpu.all_subresource,
-                    .{ .discard = true },
-                    entry.@"1",
-                );
-            }
-            self.pending_texture_transitions_count = 0;
-
-            self_texture_cmd.end() catch {};
-            self_texture_cmd.submit(true) catch {};
-        }
-
-        const perform_copy_transition = self.pending_copy_transitions_count > 0;
-        if (perform_copy_transition) {
-            self_copy_cmd.begin() catch {};
-
-            for (self.pending_copy_transitions[0..self.pending_copy_transitions_count]) |entry| {
-                const self_texture: *Texture = entry.@"0";
-                self_copy_cmd.textureBarrier(
-                    self_texture,
-                    gpu.all_subresource,
-                    .{ .discard = true },
-                    entry.@"1",
-                );
-            }
-            self.pending_copy_transitions_count = 0;
-
-            self_copy_cmd.end() catch {};
-            self_copy_cmd.submit(true) catch {};
-        }
+        self.device.cmdPipelineBarrier2(cmd, &dependency_info);
     }
 
     fn debugCallback(
@@ -576,7 +510,9 @@ pub const Device = struct {
             },
         };
         try required_extension_names.appendSlice(arena, platform_surface_extension_names);
-        try required_extension_names.append(arena, vk.extensions.ext_debug_utils.name);
+        if (instance_desc.use_validation_layers) {
+            try required_extension_names.append(arena, vk.extensions.ext_debug_utils.name);
+        }
         // try required_extension_names.append(arena, vk.extensions.khr_portability_enumeration.name);
 
         for (platform_surface_extension_names) |ext_name| {
@@ -634,25 +570,29 @@ pub const Device = struct {
             _ = instance_desc.out_instance_wrapper.destroyInstance(instance, null);
         }
 
-        const debug_messenger_create_info: vk.DebugUtilsMessengerCreateInfoEXT = .{
-            .message_severity = .{
-                .error_bit_ext = true,
-                .warning_bit_ext = true,
-                .info_bit_ext = true,
-                .verbose_bit_ext = true,
-            },
-            .message_type = .{
-                .general_bit_ext = true,
-                .validation_bit_ext = true,
-                .performance_bit_ext = true,
-                .device_address_binding_bit_ext = true,
-            },
-            .pfn_user_callback = debugCallback,
-        };
-        instance_desc.out_debug_messenger.* = try instance_desc.out_instance.createDebugUtilsMessengerEXT(
-            &debug_messenger_create_info,
-            null,
-        );
+        if (instance_desc.use_validation_layers) {
+            const debug_messenger_create_info: vk.DebugUtilsMessengerCreateInfoEXT = .{
+                .message_severity = .{
+                    .error_bit_ext = true,
+                    .warning_bit_ext = true,
+                    .info_bit_ext = true,
+                    .verbose_bit_ext = true,
+                },
+                .message_type = .{
+                    .general_bit_ext = true,
+                    .validation_bit_ext = true,
+                    .performance_bit_ext = true,
+                    .device_address_binding_bit_ext = true,
+                },
+                .pfn_user_callback = debugCallback,
+            };
+            instance_desc.out_debug_messenger.* = try instance_desc.out_instance.createDebugUtilsMessengerEXT(
+                &debug_messenger_create_info,
+                null,
+            );
+        } else {
+            instance_desc.out_debug_messenger.* = .null_handle;
+        }
 
         log.info("Vulkan instance created successfully", .{});
     }
@@ -1128,8 +1068,8 @@ const DescriptorHeap = struct {
         );
         errdefer offset_allocator.deinit(allocator);
 
-        setDebugName(&device.device, .descriptor_pool, vk.DescriptorPool, pool, name);
-        setDebugName(&device.device, .descriptor_set, vk.DescriptorSet, out_sets[0], name);
+        setDebugName(device, .descriptor_pool, vk.DescriptorPool, pool, name);
+        setDebugName(device, .descriptor_set, vk.DescriptorSet, out_sets[0], name);
 
         return .{
             .device = device,
@@ -1153,6 +1093,84 @@ const DescriptorHeap = struct {
 
     fn free(heap: *DescriptorHeap, allocation: OffsetAllocator.Allocation) void {
         heap.offset_allocator.free(allocation) catch unreachable;
+    }
+};
+
+const SingleSubmitCommandBufferPool = struct {
+    device: *Device,
+    command_pool: vk.CommandPool,
+
+    fn init(device: *Device, name: []const u8) !SingleSubmitCommandBufferPool {
+        const create_info: vk.CommandPoolCreateInfo = .{
+            .flags = .{ .transient_bit = true },
+            .queue_family_index = device.graphics_queue_family_index,
+        };
+
+        const command_pool = try device.device.createCommandPool(&create_info, null);
+        setDebugName(device, .command_pool, vk.CommandPool, command_pool, name);
+
+        return .{
+            .device = device,
+            .command_pool = command_pool,
+        };
+    }
+
+    fn deinit(pool: *SingleSubmitCommandBufferPool) void {
+        pool.device.deleteObject(.command_pool, @intFromEnum(pool.command_pool));
+    }
+
+    fn begin(pool: *SingleSubmitCommandBufferPool) !vk.CommandBuffer {
+        const allocate_info: vk.CommandBufferAllocateInfo = .{
+            .command_pool = pool.command_pool,
+            .level = .primary,
+            .command_buffer_count = 1,
+        };
+
+        var out_buffers: [1]vk.CommandBuffer = undefined;
+        try pool.device.device.allocateCommandBuffers(&allocate_info, &out_buffers);
+
+        for (out_buffers) |cmd_buf| {
+            const begin_info: vk.CommandBufferBeginInfo = .{
+                .flags = .{ .one_time_submit_bit = true },
+            };
+            try pool.device.device.beginCommandBuffer(cmd_buf, &begin_info);
+
+            setDebugName(
+                pool.device,
+                .command_buffer,
+                vk.CommandBuffer,
+                cmd_buf,
+                "Single Submit Command Buffer",
+            );
+        }
+
+        return out_buffers[0];
+    }
+
+    fn end(
+        pool: *SingleSubmitCommandBufferPool,
+        command_buffer: vk.CommandBuffer,
+    ) !void {
+        try pool.device.device.endCommandBuffer(command_buffer);
+
+        const submit_info: vk.SubmitInfo = .{
+            .command_buffer_count = 1,
+            .p_command_buffers = &.{command_buffer},
+        };
+        try pool.device.device.queueSubmit(
+            pool.device.graphics_queue,
+            1,
+            &.{submit_info},
+            .null_handle,
+        );
+
+        try pool.device.device.queueWaitIdle(pool.device.graphics_queue);
+
+        pool.device.device.freeCommandBuffers(
+            pool.command_pool,
+            1,
+            &.{command_buffer},
+        );
     }
 };
 
@@ -1213,7 +1231,7 @@ const Buffer = struct {
 
         self.cpu_address = @ptrCast(allocation_info.pMappedData);
 
-        setDebugName(&self.device.device, .buffer, vk.Buffer, self.buffer, name);
+        setDebugName(self.device, .buffer, vk.Buffer, self.buffer, name);
 
         if (self.allocation != .null_handle) {
             setAllocationName(device.vma, self.allocation, name);
@@ -1374,7 +1392,7 @@ const CommandList = struct {
         };
         self.command_pool = command_pool;
 
-        setDebugName(&device.device, .command_pool, vk.CommandPool, self.command_pool, name);
+        setDebugName(device, .command_pool, vk.CommandPool, self.command_pool, name);
 
         const command_buffer_allocate_info: vk.CommandBufferAllocateInfo = .{
             .command_pool = self.command_pool,
@@ -1392,7 +1410,7 @@ const CommandList = struct {
         };
         self.command_buffer = out_command_buffers[0];
 
-        setDebugName(&device.device, .command_buffer, vk.CommandBuffer, self.command_buffer, name);
+        setDebugName(device, .command_buffer, vk.CommandBuffer, self.command_buffer, name);
     }
 
     fn deinit(self: *CommandList) void {
@@ -1486,8 +1504,6 @@ const CommandList = struct {
     }
 
     fn submit(self: *CommandList, wait_idle: bool) Error!void {
-        self.device.flushLayoutTransition(self);
-
         var wait_semaphores: [64]vk.Semaphore = undefined;
         var wait_values: [64]u64 = undefined;
         var signal_semaphores: [64]vk.Semaphore = undefined;
@@ -2702,10 +2718,13 @@ const Fence = struct {
             .p_next = &semaphore_info,
         };
 
+        // log.debug("making semaphore...", .{});
+        // std.debug.dumpCurrentStackTrace(.{});
+
         const result = try self.device.device.createSemaphore(&create_info, null);
         self.semaphore = result;
 
-        setDebugName(&self.device.device, .semaphore, vk.Semaphore, self.semaphore, name);
+        setDebugName(self.device, .semaphore, vk.Semaphore, self.semaphore, name);
     }
 
     fn deinit(self: *Fence) void {
@@ -2983,7 +3002,7 @@ const Pipeline = struct {
         }
         self.pipeline = result_pipeline[0];
 
-        setDebugName(&self.device.device, .pipeline, vk.Pipeline, self.pipeline, name);
+        setDebugName(device, .pipeline, vk.Pipeline, self.pipeline, name);
     }
 
     fn initCompute(self: *Pipeline, device: *Device, desc: gpu.Pipeline.ComputeDesc, name: []const u8) Error!void {
@@ -3055,7 +3074,7 @@ const Swapchain = struct {
 
         const surface_result, const supports_mailbox = createSurface(
             &device.instance,
-            &device.device,
+            device,
             device.physical_device,
             desc.window_handle.window_handle,
             self.name,
@@ -3078,7 +3097,7 @@ const Swapchain = struct {
         self.height = @intCast(caps.current_extent.height);
 
         const swapchain_result = createSwapchain(
-            &device.device,
+            device,
             self.surface,
             .null_handle,
             self.supports_mailbox,
@@ -3106,7 +3125,7 @@ const Swapchain = struct {
         };
 
         createSemaphores(
-            &device.device,
+            device,
             &self.acquire_semaphores,
             &self.present_semaphores,
         ) catch |err| {
@@ -3152,7 +3171,7 @@ const Swapchain = struct {
 
     fn createSurface(
         instance: *vk.InstanceProxy,
-        device: *vk.DeviceProxy,
+        device: *Device,
         physical_device: vk.PhysicalDevice,
         window_handle: ?*anyopaque,
         name: []const u8,
@@ -3238,7 +3257,7 @@ const Swapchain = struct {
     }
 
     fn createSwapchain(
-        device: *vk.DeviceProxy,
+        device: *Device,
         surface: vk.SurfaceKHR,
         old_swapchain: vk.SwapchainKHR,
         supports_mailbox: bool,
@@ -3271,7 +3290,7 @@ const Swapchain = struct {
         };
         create_info.present_mode = .immediate_khr;
 
-        const result = try device.createSwapchainKHR(&create_info, null);
+        const result = try device.device.createSwapchainKHR(&create_info, null);
 
         setDebugName(
             device,
@@ -3282,7 +3301,7 @@ const Swapchain = struct {
         );
 
         if (old_swapchain != .null_handle) {
-            device.destroySwapchainKHR(old_swapchain, null);
+            device.device.destroySwapchainKHR(old_swapchain, null);
         }
 
         return result;
@@ -3342,7 +3361,7 @@ const Swapchain = struct {
     }
 
     fn createSemaphores(
-        device: *vk.DeviceProxy,
+        device: *Device,
         out_acquire_semaphores: *[gpu.backbuffer_count]vk.Semaphore,
         out_present_semaphores: *[gpu.backbuffer_count]vk.Semaphore,
     ) !void {
@@ -3351,7 +3370,7 @@ const Swapchain = struct {
         var name_buf: [256]u8 = undefined;
 
         for (out_acquire_semaphores.*[0..], 0..) |*s, i| {
-            s.* = try device.createSemaphore(&create_info, null);
+            s.* = try device.device.createSemaphore(&create_info, null);
             const name = std.fmt.bufPrint(&name_buf, "swapchain acquire semaphore {}", .{i}) catch unreachable;
             setDebugName(
                 device,
@@ -3363,7 +3382,7 @@ const Swapchain = struct {
         }
 
         for (out_present_semaphores.*[0..], 0..) |*s, i| {
-            s.* = try device.createSemaphore(&create_info, null);
+            s.* = try device.device.createSemaphore(&create_info, null);
             const name = std.fmt.bufPrint(&name_buf, "swapchain present semaphore {}", .{i}) catch unreachable;
             setDebugName(
                 device,
@@ -3379,6 +3398,8 @@ const Swapchain = struct {
         self: *Swapchain,
     ) !void {
         try self.device.device.deviceWaitIdle();
+
+        self.device.garbageCollect();
 
         // need to call this to update surface capabilities (surface extent), no idea why
         _ = self.device.instance.getPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -3406,7 +3427,7 @@ const Swapchain = struct {
         }
 
         const swapchain = try createSwapchain(
-            &self.device.device,
+            self.device,
             self.surface,
             self.swapchain,
             self.supports_mailbox,
@@ -3428,7 +3449,7 @@ const Swapchain = struct {
         );
 
         try createSemaphores(
-            &self.device.device,
+            self.device,
             &self.acquire_semaphores,
             &self.present_semaphores,
         );
@@ -3636,7 +3657,7 @@ const Texture = struct {
             return error.Gpu;
         }
 
-        setDebugName(&device.device, .image, vk.Image, self.image, name);
+        setDebugName(device, .image, vk.Image, self.image, name);
         if (self.allocation != .null_handle) {
             setAllocationName(device.vma, self.allocation, name);
         }
@@ -3662,7 +3683,7 @@ const Texture = struct {
             .desc = desc,
         };
 
-        setDebugName(&device.device, .image, vk.Image, self.image, name);
+        setDebugName(device, .image, vk.Image, self.image, name);
 
         self.image_views = InlineStorage(vk.ImageView, 1).initFixed(&.{.null_handle}) catch unreachable;
 
@@ -3670,7 +3691,7 @@ const Texture = struct {
     }
 
     fn deinit(self: *Texture) void {
-        self.device.cancelDefaultTransition(self);
+        // self.device.cancelDefaultTransition(self);
         if (self.allocation != .null_handle) {
             self.device.deleteAllocation(self.allocation);
             self.allocation = .null_handle;
@@ -5464,7 +5485,9 @@ const vk_mem_alloc = struct {
     pub extern fn vmaFreeStatsString(allocator: Allocator, pStatsString: [*c]u8) void;
 };
 
-fn setDebugName(device: *vk.DeviceProxy, obj_type: vk.ObjectType, comptime T: type, handle: T, name: []const u8) void {
+fn setDebugName(device: *Device, obj_type: vk.ObjectType, comptime T: type, handle: T, name: []const u8) void {
+    if (device.options.validation == false) return;
+
     var buf: [256]u8 = undefined;
     const name_sentinel: [:0]u8 = std.fmt.bufPrintSentinel(&buf, "{s}", .{name}, 0) catch {
         log.err("Failed to format debug name: {s}", .{name});
@@ -5477,7 +5500,7 @@ fn setDebugName(device: *vk.DeviceProxy, obj_type: vk.ObjectType, comptime T: ty
         .p_object_name = name_sentinel.ptr,
     };
 
-    device.setDebugUtilsObjectNameEXT(&info) catch {
+    device.device.setDebugUtilsObjectNameEXT(&info) catch {
         log.err("Failed to set debug name: {s} of {s}", .{ name, @tagName(obj_type) });
     };
 }

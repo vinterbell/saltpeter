@@ -26,7 +26,10 @@ pub fn main() !void {
         allocator,
         .cwd(),
         io,
-        .{},
+        .{
+            .backend = .vulkan,
+            .validation = true,
+        },
     );
     defer rctx.destroy();
 

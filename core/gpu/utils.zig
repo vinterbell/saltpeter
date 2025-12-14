@@ -340,8 +340,6 @@ pub const UploadStage = struct {
             return;
         }
 
-        try self.waitForUploads();
-
         const cmd = self.commandList();
         self.interface.resetCommandAllocator(cmd);
         try self.interface.beginCommandList(cmd);
@@ -369,9 +367,13 @@ pub const UploadStage = struct {
         self.upload_fence_token_value = self.current_fence_value;
         try self.interface.submitCommandList(cmd);
 
-        // TODO: transition barriers for vulkan
+        // we NEED to wait because we might do transiitons here that the graphics queue needs to see:
+        // if we do this transition on the copy command it becomes a hazard racing write because the graphics queue
+        // and the copy queue could be different
+        try self.waitForUploads();
 
-        if (self.needs_transition) {
+        // vulkan needs the barriers, d3d12 does not as it transitions them automatically
+        if (!self.needs_transition) {
             for (self.pending_texture_uploads.items) |upload| {
                 const desc = self.interface.getTextureDesc(upload.destination.texture);
                 self.interface.commandTextureBarrier(
