@@ -825,6 +825,15 @@ pub const Device = struct {
             }
         }
 
+        // fallback to graphics queue if no separate compute/copy queues found
+        if (result.compute_family_index == null) {
+            result.compute_family_index = result.graphics_family_index;
+        }
+
+        if (result.copy_family_index == null) {
+            result.copy_family_index = result.graphics_family_index;
+        }
+
         return result;
     }
 
