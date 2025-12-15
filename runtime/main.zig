@@ -27,7 +27,6 @@ pub fn main() !void {
         .cwd(),
         io,
         .{
-            .backend = .vulkan,
             .validation = false,
         },
     );
