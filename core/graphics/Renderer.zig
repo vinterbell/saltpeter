@@ -298,7 +298,9 @@ fn blitSwapchainsWithUnit(
                     .sampler_index = linear_sampler,
                 },
             );
+            // for (0..350) |_| {
             interface.commandDraw(cmd, 3, 1, 0, 0);
+            // }
         }
     }
 }

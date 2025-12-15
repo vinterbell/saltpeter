@@ -414,8 +414,8 @@ pub fn commandCopyBufferToBuffer(
 }
 
 // fence
-pub fn createFence(self: Interface, allocator: std.mem.Allocator, debug_name: []const u8) Error!*Fence {
-    return self.vtable.create_fence(self.data, allocator, debug_name);
+pub fn createFence(self: Interface, allocator: std.mem.Allocator, initial_value: u64, debug_name: []const u8) Error!*Fence {
+    return self.vtable.create_fence(self.data, allocator, initial_value, debug_name);
 }
 
 pub fn destroyFence(self: Interface, fence: *Fence) void {
@@ -697,7 +697,7 @@ pub const VTable = struct {
     ) void,
 
     // fence
-    create_fence: *const fn (data: *anyopaque, allocator: std.mem.Allocator, debug_name: []const u8) Error!*Fence,
+    create_fence: *const fn (data: *anyopaque, allocator: std.mem.Allocator, initial_value: u64, debug_name: []const u8) Error!*Fence,
     destroy_fence: *const fn (data: *anyopaque, fence: *Fence) void,
     signal_fence: *const fn (data: *anyopaque, fence: *Fence, value: u64) Error!void,
     wait_fence: *const fn (data: *anyopaque, fence: *Fence, value: u64) Error!void,

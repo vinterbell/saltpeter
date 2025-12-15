@@ -2128,14 +2128,14 @@ const Fence = struct {
     handle: *d3d12.IFence,
     event: win32.HANDLE = std.os.windows.INVALID_HANDLE_VALUE,
 
-    fn init(self: *Fence, device: *Device, name: []const u8) !void {
+    fn init(self: *Fence, device: *Device, initial_value: u64, name: []const u8) !void {
         self.* = .{
             .handle = undefined,
             .device = device,
         };
 
         const hr_create_fence = device.device.idevice.CreateFence(
-            0,
+            initial_value,
             .{},
             win32.riid(d3d12.IFence),
             @ptrCast(&self.handle),
@@ -3382,12 +3382,13 @@ const impl = struct {
     fn createFence(
         data: *anyopaque,
         allocator: std.mem.Allocator,
+        initial_value: u64,
         debug_name: []const u8,
     ) Error!*gpu.Fence {
         const device: *Device = .fromData(data);
         var fence = try allocator.create(Fence);
         errdefer allocator.destroy(fence);
-        try fence.init(device, debug_name);
+        try fence.init(device, initial_value, debug_name);
         fence.allocator = allocator;
         return fence.toGpuFence();
     }

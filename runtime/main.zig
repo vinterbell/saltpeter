@@ -28,7 +28,7 @@ pub fn main() !void {
         io,
         .{
             .backend = .vulkan,
-            .validation = true,
+            .validation = false,
         },
     );
     defer rctx.destroy();

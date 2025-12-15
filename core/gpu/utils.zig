@@ -255,7 +255,7 @@ pub const UploadStage = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, interface: gpu.Interface) !UploadStage {
-        const upload_fence = try interface.createFence(allocator, "upload stage fence");
+        const upload_fence = try interface.createFence(allocator, 0, "upload stage fence");
         errdefer interface.destroyFence(upload_fence);
 
         var upload_command_lists: [gpu.backbuffer_count]*gpu.CommandList = undefined;

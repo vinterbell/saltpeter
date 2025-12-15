@@ -27,6 +27,7 @@ pub fn init(allocator: std.mem.Allocator, options: gpu.Options) Error!RenderDevi
     var buf: [256]u8 = undefined;
     const frame_fence = try interface.createFence(
         allocator,
+        0,
         "frame_fence",
     );
     errdefer interface.destroyFence(frame_fence);
@@ -46,7 +47,7 @@ pub fn init(allocator: std.mem.Allocator, options: gpu.Options) Error!RenderDevi
         command_lists_initialized += 1;
     }
 
-    const compute_fence = try interface.createFence(allocator, "compute_fence");
+    const compute_fence = try interface.createFence(allocator, 0, "compute_fence");
     errdefer interface.destroyFence(compute_fence);
 
     var compute_command_lists: [gpu.backbuffer_count]*gpu.CommandList = undefined;

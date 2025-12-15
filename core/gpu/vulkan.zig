@@ -552,11 +552,13 @@ pub const Device = struct {
             // .flags = .{ .enumerate_portability_bit_khr = true },
             .flags = .{},
             .p_application_info = &.{
-                .p_application_name = "saltpeter",
-                .application_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
-                .p_engine_name = "saltpeter_engine",
-                .engine_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
+                // .p_application_name = "saltpeter",
+                // .application_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
+                // .p_engine_name = "saltpeter_engine",
+                // .engine_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
                 .api_version = @bitCast(vk.API_VERSION_1_4),
+                .engine_version = 0,
+                .application_version = 0,
             },
             .enabled_layer_count = @intCast(required_layer_names.items.len),
             .pp_enabled_layer_names = required_layer_names.items.ptr,
@@ -758,8 +760,13 @@ pub const Device = struct {
             .dynamic_rendering = .true,
         };
 
-        var mutable_descriptor_features: vk.PhysicalDeviceMutableDescriptorTypeFeaturesEXT = .{
+        var vulkan_14_features: vk.PhysicalDeviceVulkan14Features = .{
             .p_next = &vulkan_13_features,
+            .push_descriptor = .true,
+        };
+
+        var mutable_descriptor_features: vk.PhysicalDeviceMutableDescriptorTypeFeaturesEXT = .{
+            .p_next = &vulkan_14_features,
             .mutable_descriptor_type = .true,
         };
 
@@ -1387,7 +1394,7 @@ const CommandList = struct {
         };
 
         const command_pool_info: vk.CommandPoolCreateInfo = .{
-            .flags = .{},
+            .flags = .{ .transient_bit = true },
             .queue_family_index = switch (command_queue) {
                 .graphics => device.graphics_queue_family_index,
                 .compute => device.compute_queue_family_index,
@@ -1435,25 +1442,38 @@ const CommandList = struct {
         return @ptrCast(@alignCast(command_list));
     }
 
+    // would be using resetCommandPool but that's a bit slow
     fn resetAllocator(self: *CommandList) void {
         if (self.is_open) {
             log.err("Cannot reset command allocator while command list is open", .{});
             self.end() catch {};
         }
 
-        self.device.device.resetCommandPool(self.command_pool, .{
-            .release_resources_bit = true,
-        }) catch |err| {
-            log.err("Failed to reset command pool: {s}", .{@errorName(err)});
-            @panic("Failed to reset command pool");
+        self.device.device.freeCommandBuffers(
+            self.command_pool,
+            1,
+            &.{self.command_buffer},
+        );
+
+        const allocate_info: vk.CommandBufferAllocateInfo = .{
+            .command_pool = self.command_pool,
+            .level = .primary,
+            .command_buffer_count = 1,
         };
+        var out_command_buffers: [1]vk.CommandBuffer = undefined;
+        self.device.device.allocateCommandBuffers(
+            &allocate_info,
+            &out_command_buffers,
+        ) catch |err| {
+            log.err("Failed to allocate command buffer: {s}", .{@errorName(err)});
+            @panic("Failed to allocate command buffer");
+        };
+        self.command_buffer = out_command_buffers[0];
     }
 
     fn begin(self: *CommandList) Error!void {
         const begin_info: vk.CommandBufferBeginInfo = .{
-            .flags = .{
-                .one_time_submit_bit = true,
-            },
+            .flags = .{ .one_time_submit_bit = true },
         };
         self.device.device.beginCommandBuffer(self.command_buffer, &begin_info) catch |err| {
             log.err("Failed to begin command buffer: {s}", .{@errorName(err)});
@@ -2711,7 +2731,7 @@ const Fence = struct {
     allocator: std.mem.Allocator,
     semaphore: vk.Semaphore,
 
-    fn init(self: *Fence, device: *Device, name: []const u8) !void {
+    fn init(self: *Fence, device: *Device, initial_value: u64, name: []const u8) !void {
         self.* = .{
             .semaphore = .null_handle,
             .device = device,
@@ -2719,7 +2739,7 @@ const Fence = struct {
         };
 
         const semaphore_info: vk.SemaphoreTypeCreateInfo = .{
-            .initial_value = 0,
+            .initial_value = initial_value,
             .semaphore_type = .timeline,
         };
 
@@ -2734,6 +2754,11 @@ const Fence = struct {
         self.semaphore = result;
 
         setDebugName(self.device, .semaphore, vk.Semaphore, self.semaphore, name);
+
+        try self.device.device.signalSemaphore(&.{
+            .semaphore = self.semaphore,
+            .value = 0,
+        });
     }
 
     fn deinit(self: *Fence) void {
@@ -4272,6 +4297,7 @@ const impl = struct {
     fn createFence(
         data: *anyopaque,
         allocator: std.mem.Allocator,
+        initial_value: u64,
         name: []const u8,
     ) Error!*gpu.Fence {
         const device: *Device = .fromData(data);
@@ -4279,7 +4305,7 @@ const impl = struct {
             return error.OutOfMemory;
         };
         errdefer allocator.destroy(fence);
-        fence.init(device, name) catch |err| {
+        fence.init(device, initial_value, name) catch |err| {
             log.err("Failed to create fence: {s}", .{@errorName(err)});
             return error.Gpu;
         };

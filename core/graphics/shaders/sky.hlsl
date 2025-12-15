@@ -62,9 +62,17 @@ FSInput VSMain(uint vertex_id : SV_VertexID)
     return output;
 }
 
+template <typename T>
+T map_range(T value, T in_min, T in_max, T out_min, T out_max)
+{
+    return out_min + (out_max - out_min) * ((value - in_min) / (in_max - in_min));
+}
+
 float3 get_sky(const float pitch)
 {
-    return lerp(float3(0.7, 0.9, 1.0), float3(0.2, 0.5, 0.8), clamp(pitch, 0.0, 1.0));
+    // 0 to 1 
+    float pitchMapped = smoothstep(0.0, 1.0, map_range<float>(pitch, -1.0/4.0, 1.0/4.0, 0.0, 1.0));
+    return lerp(float3(0.7, 0.9, 1.0), float3(0.2, 0.5, 0.8), clamp(pitchMapped, 0.0, 1.0));
 }
 
 float4 FSMain(FSInput input) : SV_TARGET
@@ -73,6 +81,6 @@ float4 FSMain(FSInput input) : SV_TARGET
     const float dx = length(input.position.xz);
     const float pitch = atan2(dy, dx); // -pi/2 to pi/2
     // return float4(get_sky(pitch), 1.0);
-    return float4(get_sky(pitch / (0.5 * PI) + 0.5), 1.0);
+    return float4(get_sky(pitch / (0.5 * PI)), 1.0);
     // return float4(input.position * 0.5 + 0.5, 1.0);
 }
