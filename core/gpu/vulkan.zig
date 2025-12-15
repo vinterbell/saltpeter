@@ -1449,26 +1449,10 @@ const CommandList = struct {
             self.end() catch {};
         }
 
-        self.device.device.freeCommandBuffers(
-            self.command_pool,
-            1,
-            &.{self.command_buffer},
-        );
-
-        const allocate_info: vk.CommandBufferAllocateInfo = .{
-            .command_pool = self.command_pool,
-            .level = .primary,
-            .command_buffer_count = 1,
+        self.device.device.resetCommandPool(self.command_pool, .{ .release_resources_bit = false }) catch |err| {
+            log.err("Failed to reset command pool: {s}", .{@errorName(err)});
+            @panic("Failed to reset command pool");
         };
-        var out_command_buffers: [1]vk.CommandBuffer = undefined;
-        self.device.device.allocateCommandBuffers(
-            &allocate_info,
-            &out_command_buffers,
-        ) catch |err| {
-            log.err("Failed to allocate command buffer: {s}", .{@errorName(err)});
-            @panic("Failed to allocate command buffer");
-        };
-        self.command_buffer = out_command_buffers[0];
     }
 
     fn begin(self: *CommandList) Error!void {
